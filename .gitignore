@@ -67,10 +67,15 @@ venv.bak/
 
 # IDEs
 .vscode/
-.vs/
 .idea/
+.vs/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Generated image files
+*.png
+*.jpg
+*.jpeg

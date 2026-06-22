@@ -3,15 +3,19 @@ import numpy as np
 
 def project_points(PC, height, width, fx, fy, cx, cy):
     """
-    点投影占位函数。
-    暂未实现投影数学，直接返回 4 个 Tensor 占位。
+    将三维点投影到二维屏幕坐标系。
+    根据针孔相机模型公式：
+    u = fx * x_cam / z_cam + cx
+    v = fy * y_cam / z_cam + cy
     """
-    N = PC.shape[0]
-    device = PC.device if isinstance(PC, torch.Tensor) else "cpu"
-    uv = torch.zeros((N, 2), device=device)
-    x_cam = torch.zeros(N, device=device)
-    y_cam = torch.zeros(N, device=device)
-    z_cam = torch.ones(N, device=device)
+    x_cam = PC[:, 0]
+    y_cam = PC[:, 1]
+    z_cam = PC[:, 2]
+
+    u = fx * x_cam / z_cam + cx
+    v = fy * y_cam / z_cam + cy
+
+    uv = torch.stack([u, v], dim=-1)
     return uv, x_cam, y_cam, z_cam
 
 def PCRasterization(PC, PCColor, height, width, fx, fy, cx, cy, near=2e-3, far=100):
