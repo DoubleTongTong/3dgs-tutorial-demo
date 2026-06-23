@@ -49,27 +49,28 @@ def main():
     fig, axes = plt.subplots(2, 2, figsize=(14, 9), facecolor='white')
 
     # Let's perform the 4 experiments from the tutorial dialogue:
+    c2w = torch.eye(4)
 
     # Experiment 1: Centered closer to the camera (Z + 8.0)
     PC1 = PC_base.clone()
     PC1[:, 2] += 8.0  # Add distance along Z
-    img1 = PCRasterization(PC1, PCColor, height, width, fx=800, fy=800, cx=cx, cy=cy)
+    img1 = PCRasterization(PC1, PCColor, height, width, fx=800, fy=800, cx=cx, cy=cy, camera2world=c2w)
 
     # Experiment 2: Centered further away (Z + 20.0)
     PC2 = PC_base.clone()
     PC2[:, 2] += 20.0
-    img2 = PCRasterization(PC2, PCColor, height, width, fx=800, fy=800, cx=cx, cy=cy)
+    img2 = PCRasterization(PC2, PCColor, height, width, fx=800, fy=800, cx=cx, cy=cy, camera2world=c2w)
 
     # Experiment 3: Shifted along X (X + 4.0, Z + 12.0)
     PC3 = PC_base.clone()
     PC3[:, 0] += 4.0
     PC3[:, 2] += 12.0
-    img3 = PCRasterization(PC3, PCColor, height, width, fx=800, fy=800, cx=cx, cy=cy)
+    img3 = PCRasterization(PC3, PCColor, height, width, fx=800, fy=800, cx=cx, cy=cy, camera2world=c2w)
 
     # Experiment 4: Zoomed in (focal length multiplied by 2.2, Z + 12.0)
     PC4 = PC_base.clone()
     PC4[:, 2] += 12.0
-    img4 = PCRasterization(PC4, PCColor, height, width, fx=800 * 2.2, fy=800 * 2.2, cx=cx, cy=cy)
+    img4 = PCRasterization(PC4, PCColor, height, width, fx=800 * 2.2, fy=800 * 2.2, cx=cx, cy=cy, camera2world=c2w)
 
     # Process images to apply a neutral light gray background (post-processing within visualization).
     # This resembles professional 3D viewports (e.g. MeshLab/Blender), avoids neon "tech-style"

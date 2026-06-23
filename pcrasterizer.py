@@ -1,16 +1,38 @@
 import torch
 import numpy as np
 
-def project_points(PC, height, width, fx, fy, cx, cy):
+def project_points(PC, height, width, fx, fy, cx, cy, camera2world):
     """
     将三维点投影到二维屏幕坐标系。
     根据针孔相机模型公式：
     u = fx * x_cam / z_cam + cx
     v = fy * y_cam / z_cam + cy
     """
-    x_cam = PC[:, 0]
-    y_cam = PC[:, 1]
-    z_cam = PC[:, 2]
+    # 1. 从 camera2world 提取旋转 R 和平移 t
+    R = camera2world[:3, :3]
+    t = camera2world[:3, 3]
+
+    # 2. 计算 R 的转置
+    R_t = R.t()
+
+    # 3. 计算世界到相机转换的平移向量：t_w2c = -R_t @ t
+    t_w2c = -R_t @ t
+
+    # 4. 构造世界到相机的变换矩阵 world2camera
+    world2camera = torch.eye(4, dtype=camera2world.dtype, device=camera2world.device)
+    world2camera[:3, :3] = R_t
+    world2camera[:3, 3] = t_w2c
+
+    # 5. 点云拼上最后一列 1
+    ones = torch.ones((PC.shape[0], 1), dtype=PC.dtype, device=PC.device)
+    PC_homo = torch.cat([PC, ones], dim=1)
+
+    # 6. 利用变换矩阵变换点云
+    PC_cam = (world2camera @ PC_homo.t()).t()[:, :3]
+
+    x_cam = PC_cam[:, 0]
+    y_cam = PC_cam[:, 1]
+    z_cam = PC_cam[:, 2]
 
     u = fx * x_cam / z_cam + cx
     v = fy * y_cam / z_cam + cy
@@ -18,12 +40,12 @@ def project_points(PC, height, width, fx, fy, cx, cy):
     uv = torch.stack([u, v], dim=-1)
     return uv, x_cam, y_cam, z_cam
 
-def PCRasterization(PC, PCColor, height, width, fx, fy, cx, cy, near=2e-3, far=100):
+def PCRasterization(PC, PCColor, height, width, fx, fy, cx, cy, camera2world, near=2e-3, far=100):
     # 1. 形状校验
     assert PC.shape == PCColor.shape, "PC and PCColor must have the same shape"
 
     # 2. 调用投影函数并解包
-    uv, x_cam, y_cam, z_cam = project_points(PC, height, width, fx, fy, cx, cy)
+    uv, x_cam, y_cam, z_cam = project_points(PC, height, width, fx, fy, cx, cy, camera2world)
     u = uv[:, 0]
     v = uv[:, 1]
 
