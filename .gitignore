@@ -79,3 +79,8 @@ venv.bak/
 *.png
 *.jpg
 *.jpeg
+
+# Datasets & ZIP files
+*.zip
+/datasets/*
+!/datasets/README.md
