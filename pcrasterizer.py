@@ -137,3 +137,23 @@ def w2c_to_c2w(q_w2c, t_w2c):
         c2w[..., :3, 3] = t_c2w
 
     return c2w
+
+def load_cameras(cameras_path, images_root, device='cpu', dtype=torch.float32):
+    from pathlib import Path
+
+    cameras_data = np.load(cameras_path, allow_pickle=True)
+    cams = sorted(cameras_data, key=lambda x: x['id'])
+
+    camera_to_worlds = []
+    image_paths = []
+    images_root = Path(images_root)
+
+    for cam in cams:
+        q = torch.tensor(cam['q'], device=device, dtype=dtype)
+        t = torch.tensor(cam['t'], device=device, dtype=dtype)
+        c2w = w2c_to_c2w(q, t)
+
+        camera_to_worlds.append(c2w)
+        image_paths.append(images_root / cam['name'])
+
+    return camera_to_worlds, image_paths
