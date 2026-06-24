@@ -32,12 +32,28 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
            (v > -pixelGuard) & (v < height + pixelGuard) & \
            (z_cam > near) & (z_cam < far)
 
-    # 4. 过滤出有效的高斯点
+    # 4. 过滤与数值稳定处理
     u_v = u[mask]
     v_v = v[mask]
     colors_v = colors[mask]
     opacity_raw_v = opacity_raw[mask]
     sigma_camera_v = sigma_camera[mask]
+
+    # 数值稳定性技巧：强制对称与保证半正定
+    sigma_camera_v = (sigma_camera_v + sigma_camera_v.transpose(1, 2)) * 0.5
+    evals, evex = torch.linalg.eigh(sigma_camera_v)
+    evals = torch.clamp(evals, min=1e-6, max=1e4)
+    sigma_camera_v = evex @ torch.diag_embed(evals) @ evex.transpose(1, 2)
+
+    # 异常数据过滤 (Guardrail Masking)
+    flat_sigma = sigma_camera_v.reshape(sigma_camera_v.shape[0], -1)
+    keep = torch.isfinite(flat_sigma).all(dim=-1)
+
+    u_v = u_v[keep]
+    v_v = v_v[keep]
+    colors_v = colors_v[keep]
+    opacity_raw_v = opacity_raw_v[keep]
+    sigma_camera_v = sigma_camera_v[keep]
 
     # 5. 透明度重参数化 (Sigmoid & Clamp 到 0.999 避免梯度消失)
     opacity_v = torch.sigmoid(opacity_raw_v)
