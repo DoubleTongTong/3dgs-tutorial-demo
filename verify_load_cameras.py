@@ -3,12 +3,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 import random
-from pcrasterizer import PCRasterization, load_cameras
+from pcrasterizer import PCRasterization
+from util import load_cameras, scale_intrinsics
 
-def scale_intrinsics(W_target, H_target, W_source, H_source, fx, fy, cx, cy):
-    scale_x = W_target / W_source
-    scale_y = H_target / H_source
-    return fx * scale_x, fy * scale_y, cx * scale_x, cy * scale_y
 
 def main():
     # Set random seed for reproducibility

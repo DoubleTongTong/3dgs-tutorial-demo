@@ -1,22 +1,9 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from pcrasterizer import PCRasterization, w2c_to_c2w
+from pcrasterizer import PCRasterization
+from util import w2c_to_c2w, scale_intrinsics
 
-def scale_intrinsics(W_target, H_target, W_source, H_source, fx, fy, cx, cy):
-    # 1. 计算宽高的缩放比例 (Scale Factors)
-    scale_x = W_target / W_source
-    scale_y = H_target / H_source
-
-    # 2. 对焦距进行等比例缩放
-    scaled_fx = fx * scale_x
-    scaled_fy = fy * scale_y
-
-    # 3. 对光心（主点）位置进行等比例缩放
-    scaled_cx = cx * scale_x
-    scaled_cy = cy * scale_y
-
-    return scaled_fx, scaled_fy, scaled_cx, scaled_cy
 
 # Set academic plotting style parameters
 plt.rcParams['font.family'] = 'serif'
