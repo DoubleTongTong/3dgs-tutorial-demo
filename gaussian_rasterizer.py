@@ -1,8 +1,8 @@
 import torch
-from util import project_points
+from util import project_points, inverse_2x2
 
 
-def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, cy, camera2world, sigma=None, near=2e-3, far=100, pixelGuard=64, tile_size=16):
+def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, cy, camera2world, sigma=None, near=2e-3, far=100, pixelGuard=64, tile_size=16, min_conic=1e-6):
     N = pos.shape[0]
     if sigma is None:
         sigma = torch.eye(3, device=pos.device, dtype=pos.dtype).unsqueeze(0).repeat(N, 1, 1)
@@ -69,9 +69,10 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
     opacity_sorted = opacity_v[order]
     sigma_camera_sorted = sigma_camera_v[order]
 
-    # 7. 计算 2D 逆协方差矩阵 (TODO)
-    # TODO: 实现数值稳定性更佳的手写 2D 逆协方差矩阵计算
-    inv_cov = torch.inverse(sigma_camera_sorted)
+    # 7. 计算 2D 逆协方差矩阵
+    inv_cov = inverse_2x2(sigma_camera_sorted)
+    inv_cov[:, 0, 0] = torch.clamp(inv_cov[:, 0, 0], min=min_conic)
+    inv_cov[:, 1, 1] = torch.clamp(inv_cov[:, 1, 1], min=min_conic)
 
     # 8. 筛选相交高斯与像素坐标网格 (TODO)
     # TODO: 实现基于 16x16 瓦片的循环筛选和网格生成

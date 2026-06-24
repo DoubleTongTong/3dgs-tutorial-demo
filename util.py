@@ -130,3 +130,23 @@ def scale_intrinsics(W_target, H_target, W_source, H_source, fx, fy, cx, cy):
     scale_x = W_target / W_source
     scale_y = H_target / H_source
     return fx * scale_x, fy * scale_y, cx * scale_x, cy * scale_y
+
+def inverse_2x2(m, eps=1e-12):
+    """
+    计算批量 2x2 矩阵的逆矩阵。
+    """
+    a = m[:, 0, 0]
+    b = m[:, 0, 1]
+    c = m[:, 1, 0]
+    d = m[:, 1, 1]
+
+    det = a * d - b * c
+    safe_det = torch.clamp(det, min=eps)
+
+    inverse = torch.empty_like(m)
+    inverse[:, 0, 0] = d / safe_det
+    inverse[:, 0, 1] = -b / safe_det
+    inverse[:, 1, 0] = -c / safe_det
+    inverse[:, 1, 1] = a / safe_det
+
+    return inverse
