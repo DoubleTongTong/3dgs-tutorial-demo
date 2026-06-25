@@ -109,6 +109,21 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
     nu_max_item = int(n_u.max().item())
     nv_max_item = int(n_v.max().item())
 
+    # 计算高斯与 Tile 的相交映射
+    device = pos.device
+    span_indices_u = torch.arange(nu_max_item, device=device, dtype=torch.int64)
+    span_indices_v = torch.arange(nv_max_item, device=device, dtype=torch.int64)
+
+    # 起始点加上跨度，得到每个高斯在每个跨度上的 Tile 坐标 (未过滤，有过度填充)
+    tile_u = u_min_tile[:, None] + span_indices_u[None, :]  # Shape: [N, nu_max_item]
+    tile_v = v_min_tile[:, None] + span_indices_v[None, :]  # Shape: [N, nv_max_item]
+
+    # 创建掩码，以过滤掉超出该高斯实际跨度 (n_u, n_v) 的 Tile
+    mask_u = span_indices_u[None, :] < n_u[:, None]  # Shape: [N, nu_max_item]
+    mask_v = span_indices_v[None, :] < n_v[:, None]  # Shape: [N, nv_max_item]
+    mask = mask_u[:, :, None] & mask_v[:, None, :]  # Shape: [N, nu_max_item, nv_max_item]
+
+
     # 7. 计算 2D 逆协方差矩阵
     inv_cov = inverse_2x2(sigma_camera_sorted)
     inv_cov[:, 0, 0] = torch.clamp(inv_cov[:, 0, 0], min=min_conic)
