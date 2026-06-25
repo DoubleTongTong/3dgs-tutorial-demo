@@ -74,68 +74,82 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
     inv_cov[:, 0, 0] = torch.clamp(inv_cov[:, 0, 0], min=min_conic)
     inv_cov[:, 1, 1] = torch.clamp(inv_cov[:, 1, 1], min=min_conic)
 
-    # 8. 筛选相交高斯与像素坐标网格 (TODO)
-    # TODO: 实现基于 16x16 瓦片的循环筛选和网格生成
-    # 暂定变量 ids 包含所有高斯，pixels 包含图像所有像素，作为已实现的占位代理
-    ids = torch.arange(len(u_sorted), device=pos.device)
-
-    grid_v, grid_u = torch.meshgrid(
-        torch.arange(height, device=pos.device, dtype=pos.dtype),
-        torch.arange(width, device=pos.device, dtype=pos.dtype),
-        indexing='ij'
-    )
-    pixels = torch.stack([grid_u.flatten(), grid_v.flatten()], dim=-1)  # (P, 2)
-
-    # 声明并初始化零画布
+    # 8. 基于 Tile 循环迭代渲染并生成像素坐标网格
+    # 声明并初始化零画布并获取其一维展平引用
     image = torch.zeros((height, width, 3), dtype=torch.float32, device=pos.device)
+    image_flat = image.view(-1, 3)
 
-    # 构造模拟的单循环迭代 todo 列表，包含占位的高斯 IDs 和像素
-    todo = [(ids, pixels)]
+    num_tiles_x = (width + tile_size - 1) // tile_size
+    num_tiles_y = (height + tile_size - 1) // tile_size
 
-    for ids_tile, pixels_tile in todo:
-        # 提取对应高斯的属性
-        u_tile = u_sorted[ids_tile]
-        v_tile = v_sorted[ids_tile]
-        colors_tile = colors_sorted[ids_tile]
-        opacity_tile = opacity_sorted[ids_tile]
-        inv_cov_tile = inv_cov[ids_tile]
+    for tyi in range(num_tiles_y):
+        for txi in range(num_tiles_x):
+            # 计算当前 Tile 的像素边界 (X0, Y0 为左上角，X1, Y1 为右下角)
+            x0 = txi * tile_size
+            y0 = tyi * tile_size
+            x1 = min((txi + 1) * tile_size, width)
+            y1 = min((tyi + 1) * tile_size, height)
 
-        # 计算距离 (du, dv)
-        du = pixels_tile[:, 0].unsqueeze(0) - u_tile.unsqueeze(1)  # (N, P)
-        dv = pixels_tile[:, 1].unsqueeze(0) - v_tile.unsqueeze(1)  # (N, P)
+            # 生成 X 和 Y 方向的一维坐标序列
+            xs = torch.arange(x0, x1, dtype=pos.dtype, device=pos.device)
+            ys = torch.arange(y0, y1, dtype=pos.dtype, device=pos.device)
 
-        # 计算 2D 高斯密度与透明度 alpha (Equation 2 核心物理公式实现)
-        a11 = inv_cov_tile[:, 0, 0].unsqueeze(1)  # (N, 1)
-        a12 = inv_cov_tile[:, 0, 1].unsqueeze(1)  # (N, 1)
-        a22 = inv_cov_tile[:, 1, 1].unsqueeze(1)  # (N, 1)
+            # 生成 Tile 内的二维像素网格 (使用 xy 索引模式，以符合图像直觉)
+            px, py = torch.meshgrid(xs, ys, indexing='xy')
 
-        # 计算 Q 值（马氏距离的平方）
-        Q = a11 * du**2 + 2.0 * a12 * du * dv + a22 * dv**2  # (N, P)
+            # 重塑为一维数组 (px_u 和 px_v 分别代表该 Tile 内部的横、纵坐标序列)
+            px_u = px.reshape(-1)
+            px_v = py.reshape(-1)
 
-        # 99% 置信区间裁剪：Q <= 9.21
-        inside = Q <= 9.21
-        G = torch.exp(-0.5 * Q)  # (N, P)
-        G = torch.where(inside, G, 0.0)
+            # 计算在全局一维图像数组中的像素索引 (Y * Width + X)
+            pixel_idx_1D = (px_v * width + px_u).to(torch.int64)
 
-        alpha = opacity_tile.unsqueeze(1) * G  # (N, P)
-        alpha = torch.clamp(alpha, max=0.999)
+            # 暂时使用所有高斯作为当前 tile 渲染的高斯
+            ids_tile = torch.arange(len(u_sorted), device=pos.device)
 
-        # 计算累积透射率 T_i = \prod_{j=1}^{i-1} (1 - \alpha_j)
-        ti = torch.cumprod(1.0 - alpha, dim=0)
+            # 提取对应高斯的属性
+            u_tile = u_sorted[ids_tile]
+            v_tile = v_sorted[ids_tile]
+            colors_tile = colors_sorted[ids_tile]
+            opacity_tile = opacity_sorted[ids_tile]
+            inv_cov_tile = inv_cov[ids_tile]
 
-        # 错位偏置一位，首位补 1
-        ti = torch.cat([
-            torch.ones((1, alpha.shape[1]), device=alpha.device, dtype=alpha.dtype),
-            ti[:-1]
-        ], dim=0)
+            # 计算像素点到高斯中心的距离 (du, dv)
+            du = px_u.unsqueeze(0) - u_tile.unsqueeze(1)  # (N, P)
+            dv = px_v.unsqueeze(0) - v_tile.unsqueeze(1)  # (N, P)
 
-        # 计算权重 w_i = alpha_i * T_i
-        w = alpha * ti  # (N, P)
+            # 计算 2D 高斯密度与透明度 alpha (Equation 2 核心物理公式实现)
+            a11 = inv_cov_tile[:, 0, 0].unsqueeze(1)  # (N, 1)
+            a12 = inv_cov_tile[:, 0, 1].unsqueeze(1)  # (N, 1)
+            a22 = inv_cov_tile[:, 1, 1].unsqueeze(1)  # (N, 1)
 
-        # 混合颜色：\sum_i w_i * c_i
-        tile_colors = (w.unsqueeze(-1) * colors_tile.unsqueeze(1)).sum(dim=0)  # (P, 3)
+            # 计算 Q 值（马氏距离的平方）
+            Q = a11 * du**2 + 2.0 * a12 * du * dv + a22 * dv**2  # (N, P)
 
-        # 转换为图像形状并写入画布
-        image = tile_colors.view(height, width, 3)
+            # 99% 置信区间裁剪：Q <= 9.21
+            inside = Q <= 9.21
+            G = torch.exp(-0.5 * Q)  # (N, P)
+            G = torch.where(inside, G, 0.0)
+
+            alpha = opacity_tile.unsqueeze(1) * G  # (N, P)
+            alpha = torch.clamp(alpha, max=0.999)
+
+            # 计算累积透射率 T_i = \prod_{j=1}^{i-1} (1 - \alpha_j)
+            ti = torch.cumprod(1.0 - alpha, dim=0)
+
+            # 错位偏置一位，首位补 1
+            ti = torch.cat([
+                torch.ones((1, alpha.shape[1]), device=alpha.device, dtype=alpha.dtype),
+                ti[:-1]
+            ], dim=0)
+
+            # 计算权重 w_i = alpha_i * T_i
+            w = alpha * ti  # (N, P)
+
+            # 混合颜色：\sum_i w_i * c_i
+            tile_colors = (w.unsqueeze(-1) * colors_tile.unsqueeze(1)).sum(dim=0)  # (P, 3)
+
+            # 写入画布对应的像素索引处
+            image_flat[pixel_idx_1D] = tile_colors
 
     return image
