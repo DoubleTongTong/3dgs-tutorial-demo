@@ -105,13 +105,19 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
         dv = pixels_tile[:, 1].unsqueeze(0) - v_tile.unsqueeze(1)  # (N, P)
 
         # 计算 2D 高斯密度与透明度 alpha (Equation 2 核心物理公式实现)
-        A = inv_cov_tile[:, 0, 0].unsqueeze(1)  # (N, 1)
-        B = inv_cov_tile[:, 0, 1].unsqueeze(1)  # (N, 1)
-        C = inv_cov_tile[:, 1, 1].unsqueeze(1)  # (N, 1)
+        a11 = inv_cov_tile[:, 0, 0].unsqueeze(1)  # (N, 1)
+        a12 = inv_cov_tile[:, 0, 1].unsqueeze(1)  # (N, 1)
+        a22 = inv_cov_tile[:, 1, 1].unsqueeze(1)  # (N, 1)
 
-        power = -0.5 * (A * du**2 + 2.0 * B * du * dv + C * dv**2)
-        density = torch.exp(power)  # (N, P)
-        alpha = opacity_tile.unsqueeze(1) * density  # (N, P)
+        # 计算 Q 值（马氏距离的平方）
+        Q = a11 * du**2 + 2.0 * a12 * du * dv + a22 * dv**2  # (N, P)
+
+        # 99% 置信区间裁剪：Q <= 9.21
+        inside = Q <= 9.21
+        G = torch.exp(-0.5 * Q)  # (N, P)
+        G = torch.where(inside, G, 0.0)
+
+        alpha = opacity_tile.unsqueeze(1) * G  # (N, P)
         alpha = torch.clamp(alpha, max=0.999)
 
         # 计算累积透射率 T_i = \prod_{j=1}^{i-1} (1 - \alpha_j)
