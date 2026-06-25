@@ -137,6 +137,13 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
     tile_v_flat = tile_v_grid[mask]                                          # Shape: [M]
     flat_tile_id = tile_v_flat * num_tiles_u + tile_u_flat                   # Shape: [M]
 
+    # 双重排序：首先按 Tile ID 排序，同一个 Tile 内按深度（Gaussian ID）排序
+    M = num_gaussians + 1
+    comp = flat_tile_id * M + gaussian_ids
+    comp_sorted, permutation = torch.sort(comp)
+    gaussian_ids_sorted = gaussian_ids[permutation]
+    tile_ids_1d = torch.div(comp_sorted, M, rounding_mode='floor')
+
     # 7. 计算 2D 逆协方差矩阵
     inv_cov = inverse_2x2(sigma_camera_sorted)
     inv_cov[:, 0, 0] = torch.clamp(inv_cov[:, 0, 0], min=min_conic)
@@ -172,11 +179,11 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
             # 计算在全局一维图像数组中的像素索引 (Y * Width + X)
             pixel_idx_1D = (px_v * width + px_u).to(torch.int64)
 
-            # 筛选与当前 Tile 相交的高斯 (使用更直观的 Tile 索引范围判断)
-            ids_tile = torch.where(
-                (u_min_tile <= txi) & (u_max_tile >= txi) &
-                (v_min_tile <= tyi) & (v_max_tile >= tyi)
-            )[0]
+            # 用二分查找快速定位当前 Tile 包含的高斯范围
+            flat_tile_id_curr = tyi * num_tiles_x + txi
+            left = torch.searchsorted(tile_ids_1d, flat_tile_id_curr, side='left')
+            right = torch.searchsorted(tile_ids_1d, flat_tile_id_curr, side='right')
+            ids_tile = gaussian_ids_sorted[left:right]
 
             if len(ids_tile) == 0:
                 continue
