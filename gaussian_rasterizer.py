@@ -123,6 +123,19 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
     mask_v = span_indices_v[None, :] < n_v[:, None]  # Shape: [N, nv_max_item]
     mask = mask_u[:, :, None] & mask_v[:, None, :]  # Shape: [N, nu_max_item, nv_max_item]
 
+    # 构建高斯 ID 数组 (每个高斯按相交的 Tile 数量进行重复)
+    num_tiles_per_gaussian = n_u * n_v                                      # Shape: [N]
+    num_gaussians = u_min_tile.shape[0]
+    base_ids = torch.arange(num_gaussians, dtype=torch.int64, device=device) # Shape: [N]
+    gaussian_ids = torch.repeat_interleave(base_ids, num_tiles_per_gaussian) # Shape: [M] (M 为所有高斯覆盖 Tile 的总数)
+
+    # 二维 Tile 坐标的“扁平化” (Flatten)
+    num_tiles_u = (width + tile_size - 1) // tile_size
+    tile_u_grid = tile_u[:, :, None].expand(-1, -1, nv_max_item)             # Shape: [N, nu_max_item, nv_max_item]
+    tile_v_grid = tile_v[:, None, :].expand(-1, nu_max_item, -1)             # Shape: [N, nu_max_item, nv_max_item]
+    tile_u_flat = tile_u_grid[mask]                                          # Shape: [M]
+    tile_v_flat = tile_v_grid[mask]                                          # Shape: [M]
+    flat_tile_id = tile_v_flat * num_tiles_u + tile_u_flat                   # Shape: [M]
 
     # 7. 计算 2D 逆协方差矩阵
     inv_cov = inverse_2x2(sigma_camera_sorted)
