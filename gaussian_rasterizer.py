@@ -95,6 +95,20 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
     v_min = v_min[onscreen].clamp(0, height - 1)
     v_max = v_max[onscreen].clamp(0, height - 1)
 
+    # 从像素坐标转换到 Tile 索引并转换为 int64
+    u_min_tile = (u_min / tile_size).to(torch.int64)
+    u_max_tile = (u_max / tile_size).to(torch.int64)
+    v_min_tile = (v_min / tile_size).to(torch.int64)
+    v_max_tile = (v_max / tile_size).to(torch.int64)
+
+    # 计算每个高斯在水平(u)和垂直(v)方向跨越的 Tile 数量 (+1 避免 Fencepost 误差)
+    n_u = u_max_tile - u_min_tile + 1
+    n_v = v_max_tile - v_min_tile + 1
+
+    # 获取全局单个高斯跨越的最大 Tile 数 (用于统计或后续阶段验证)
+    nu_max_item = int(n_u.max().item())
+    nv_max_item = int(n_v.max().item())
+
     # 7. 计算 2D 逆协方差矩阵
     inv_cov = inverse_2x2(sigma_camera_sorted)
     inv_cov[:, 0, 0] = torch.clamp(inv_cov[:, 0, 0], min=min_conic)
@@ -130,10 +144,10 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
             # 计算在全局一维图像数组中的像素索引 (Y * Width + X)
             pixel_idx_1D = (px_v * width + px_u).to(torch.int64)
 
-            # 筛选与当前 Tile 相交的高斯
+            # 筛选与当前 Tile 相交的高斯 (使用更直观的 Tile 索引范围判断)
             ids_tile = torch.where(
-                (u_min < x1) & (u_max >= x0) &
-                (v_min < y1) & (v_max >= y0)
+                (u_min_tile <= txi) & (u_max_tile >= txi) &
+                (v_min_tile <= tyi) & (v_max_tile >= tyi)
             )[0]
 
             if len(ids_tile) == 0:
