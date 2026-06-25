@@ -69,6 +69,32 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
     opacity_sorted = opacity_v[order]
     sigma_camera_sorted = sigma_camera_v[order]
 
+    # 计算高斯球在屏幕上的包围盒 (AABB) 与筛选
+    evals_v = evals[keep]
+    evals_sorted = evals_v[order]
+    major_variance = evals_sorted[:, 1].clamp(min=1e-12, max=1e4)
+    radius = torch.ceil(3.0 * torch.sqrt(major_variance)).to(torch.int64)
+
+    u_min = torch.floor(u_sorted - radius)
+    u_max = torch.ceil(u_sorted + radius)
+    v_min = torch.floor(v_sorted - radius)
+    v_max = torch.ceil(v_sorted + radius)
+
+    onscreen = (u_max > 0) & (u_min < width) & (v_max > 0) & (v_min < height)
+    if not onscreen.any():
+        raise Exception("没有高斯球在屏幕范围内！(No Gaussians onscreen!)")
+
+    u_sorted = u_sorted[onscreen]
+    v_sorted = v_sorted[onscreen]
+    colors_sorted = colors_sorted[onscreen]
+    opacity_sorted = opacity_sorted[onscreen]
+    sigma_camera_sorted = sigma_camera_sorted[onscreen]
+
+    u_min = u_min[onscreen].clamp(0, width - 1)
+    u_max = u_max[onscreen].clamp(0, width - 1)
+    v_min = v_min[onscreen].clamp(0, height - 1)
+    v_max = v_max[onscreen].clamp(0, height - 1)
+
     # 7. 计算 2D 逆协方差矩阵
     inv_cov = inverse_2x2(sigma_camera_sorted)
     inv_cov[:, 0, 0] = torch.clamp(inv_cov[:, 0, 0], min=min_conic)
@@ -104,8 +130,14 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
             # 计算在全局一维图像数组中的像素索引 (Y * Width + X)
             pixel_idx_1D = (px_v * width + px_u).to(torch.int64)
 
-            # 暂时使用所有高斯作为当前 tile 渲染的高斯
-            ids_tile = torch.arange(len(u_sorted), device=pos.device)
+            # 筛选与当前 Tile 相交的高斯
+            ids_tile = torch.where(
+                (u_min < x1) & (u_max >= x0) &
+                (v_min < y1) & (v_max >= y0)
+            )[0]
+
+            if len(ids_tile) == 0:
+                continue
 
             # 提取对应高斯的属性
             u_tile = u_sorted[ids_tile]
