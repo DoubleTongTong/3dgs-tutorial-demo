@@ -2,7 +2,7 @@ import torch
 from util import project_points, inverse_2x2
 
 
-def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, cy, camera2world, sigma=None, near=2e-3, far=100, pixelGuard=64, tile_size=16, min_conic=1e-6):
+def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, cy, camera2world, sigma=None, near=2e-3, far=100, pixelGuard=64, tile_size=16, min_conic=1e-6, chi_square_clip=9.21, alpha_max=0.99, alpha_cutoff=1.0/255.0):
     N = pos.shape[0]
     if sigma is None:
         sigma = torch.eye(3, device=pos.device, dtype=pos.dtype).unsqueeze(0).repeat(N, 1, 1)
@@ -126,13 +126,17 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
             # 计算 Q 值（马氏距离的平方）
             Q = a11 * du**2 + 2.0 * a12 * du * dv + a22 * dv**2  # (N, P)
 
-            # 99% 置信区间裁剪：Q <= 9.21
-            inside = Q <= 9.21
+            # 限制 Q 的上限以避免数值爆炸
+            Q = torch.clamp(Q, max=chi_square_clip)
+
+            # 99% 置信区间裁剪
+            inside = Q <= chi_square_clip
             G = torch.exp(-0.5 * Q)  # (N, P)
             G = torch.where(inside, G, 0.0)
 
             alpha = opacity_tile.unsqueeze(1) * G  # (N, P)
-            alpha = torch.clamp(alpha, max=0.999)
+            alpha = torch.clamp(alpha, max=alpha_max)
+            alpha = torch.where(alpha >= alpha_cutoff, alpha, 0.0)
 
             # 计算累积透射率 T_i = \prod_{j=1}^{i-1} (1 - \alpha_j)
             ti = torch.cumprod(1.0 - alpha, dim=0)
