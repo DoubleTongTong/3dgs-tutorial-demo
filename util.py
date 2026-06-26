@@ -150,3 +150,17 @@ def inverse_2x2(m, eps=1e-12):
     inverse[:, 1, 1] = a / safe_det
 
     return inverse
+
+def compute_3d_covariance(scale_raw, rot_raw):
+    """
+    从缩放和旋转参数计算 3D 协方差矩阵 Sigma。
+    rot_raw: 四元数参数，Shape (..., 4)，格式为 [w, x, y, z]
+    scale_raw: 缩放参数，Shape (..., 3)
+    """
+    # rot_raw 的四元数格式为 [w, x, y, z]，需要转换为 quat_to_rotmat 期望的 [x, y, z, w]
+    rot_xyzw = torch.cat([rot_raw[..., 1:], rot_raw[..., :1]], dim=-1)
+    R = quat_to_rotmat(rot_xyzw)
+    S = torch.exp(scale_raw)
+    S2 = torch.diag_embed(S ** 2)
+    sigma = R @ S2 @ R.transpose(-1, -2)
+    return sigma
