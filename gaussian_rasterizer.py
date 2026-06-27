@@ -206,8 +206,6 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
         # 计算 Q 值（马氏距离的平方）
         Q = a11 * du**2 + 2.0 * a12 * du * dv + a22 * dv**2  # (N, P)
 
-        # 限制 Q 的上限以避免数值爆炸
-        Q = torch.clamp(Q, max=chi_square_clip)
 
         # 99% 置信区间裁剪
         inside = Q <= chi_square_clip

@@ -194,7 +194,7 @@ SH_C3_z_x2_y2 = 1.445305721320277
 SH_C3_x_x2_3y2 = 0.5900435899266435
 
 
-def evaluate_sh(f_dc, f_rest, points, camera_to_world):
+def evaluate_sh(f_dc, f_rest, points, camera_to_world, interleaved=True):
     """
     计算基于视角的球谐颜色
     """
@@ -247,10 +247,15 @@ def evaluate_sh(f_dc, f_rest, points, camera_to_world):
     sh[:, 0, :] = f_dc
 
     # 填充 1-3 阶系数 (f_rest)
-    sh[:, 1:, 0] = f_rest[:, :15]
-    sh[:, 1:, 1] = f_rest[:, 15:30]
-    sh[:, 1:, 2] = f_rest[:, 30:]
+    if interleaved:
+        sh[:, 1:, :] = f_rest.reshape(-1, 15, 3)
+    else:
+        sh[:, 1:, 0] = f_rest[:, :15]
+        sh[:, 1:, 1] = f_rest[:, 15:30]
+        sh[:, 1:, 2] = f_rest[:, 30:]
 
     # 8. 相乘求和并进行 Sigmoid 激活得到最终 RGB 颜色
     raw_rgb = torch.sum(sh * Y.unsqueeze(-1), dim=1)
-    return torch.sigmoid(raw_rgb)
+    # return torch.sigmoid(raw_rgb)
+    return torch.clamp(raw_rgb + 0.5, min=0.0, max=1.0)
+

@@ -61,7 +61,7 @@ def main():
     t_w2c_0 = torch.tensor(cameras[0]['t'], device=device).float()
     c2w_0 = w2c_to_c2w(q_w2c_0, t_w2c_0)
 
-    colors_0 = evaluate_sh(f_dc, f_rest, pos, c2w_0)
+    colors_0 = evaluate_sh(f_dc, f_rest, pos, c2w_0, interleaved=False)
     render_and_save_view(
         pos, colors_0, alpha_raw, sigma, height, width, fx, fy, cx, cy, c2w_0, bg_color,
         "bonsai_3dgs_view_cam_0.png"
@@ -79,7 +79,7 @@ def main():
         t_w2c = torch.tensor(cam['t'], device=device).float()
         c2w = w2c_to_c2w(q_w2c, t_w2c)
 
-        colors = evaluate_sh(f_dc, f_rest, pos, c2w)
+        colors = evaluate_sh(f_dc, f_rest, pos, c2w, interleaved=False)
         output_path = f"bonsai_3dgs_view_cam_{idx}.png"
         render_and_save_view(
             pos, colors, alpha_raw, sigma, height, width, fx, fy, cx, cy, c2w, bg_color,
