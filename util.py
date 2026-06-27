@@ -166,7 +166,7 @@ def compute_3d_covariance(scale_raw, rot_raw):
     return sigma
 
 # -------------------------
-# 球谐函数 (Spherical Harmonics) 常量及评估函数 (占位)
+# 球谐函数 (Spherical Harmonics) 常量及评估函数
 # -------------------------
 
 # 0阶系数 (Degree 0)
@@ -198,4 +198,59 @@ def evaluate_sh(f_dc, f_rest, points, camera_to_world):
     """
     计算基于视角的球谐颜色
     """
-    pass
+    # 1. 提取相机在世界坐标系中的位置 (最后一列前三个元素)
+    camera_center = camera_to_world[:3, 3]
+
+    # 2. 计算并归一化视角方向 (点到相机的向量)
+    view_dir = points - camera_center
+    view_dir = view_dir / (torch.norm(view_dir, dim=-1, keepdim=True) + 1e-12)
+
+    # 3. 提取 x, y, z 分量
+    x, y, z = view_dir[:, 0], view_dir[:, 1], view_dir[:, 2]
+
+    # 4. 预计算高阶项乘积以提升效率
+    xx, yy, zz = x * x, y * y, z * z
+    xy, yz, xz = x * y, y * z, x * z
+
+    # 5. 计算 16 个球谐基函数 (Y0 至 Y15)
+    Y0 = torch.full_like(x, SH_C0)
+
+    # 1阶
+    Y1 = -SH_C1_y * y
+    Y2 = SH_C1_z * z
+    Y3 = -SH_C1_x * x
+
+    # 2阶
+    Y4 = SH_C2_xy * xy
+    Y5 = -SH_C2_yz * yz
+    Y6 = SH_C2_zz * (3.0 * zz - 1.0)
+    Y7 = -SH_C2_xz * xz
+    Y8 = SH_C2_xx_yy * (xx - yy)
+
+    # 3阶
+    Y9 = -SH_C3_y_3x2_y2 * y * (3.0 * xx - yy)
+    Y10 = SH_C3_xyz * xy * z
+    Y11 = -SH_C3_y_zz_x2_y2 * y * (4.0 * zz - xx - yy)
+    Y12 = SH_C3_zz_x2_y2 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy)
+    Y13 = -SH_C3_x_zz_x2_y2 * x * (4.0 * zz - xx - yy)
+    Y14 = SH_C3_z_x2_y2 * z * (xx - yy)
+    Y15 = -SH_C3_x_x2_3y2 * x * (xx - 3.0 * yy)
+
+    # 6. 将 Y 堆叠为 (N, 16)
+    Y = torch.stack([Y0, Y1, Y2, Y3, Y4, Y5, Y6, Y7, Y8, Y9, Y10, Y11, Y12, Y13, Y14, Y15], dim=-1)
+
+    # 7. 重组系数矩阵为 (N, 16, 3)
+    N = points.shape[0]
+    sh = torch.empty((N, 16, 3), dtype=points.dtype, device=points.device)
+
+    # 填充 0 阶系数 (f_dc)
+    sh[:, 0, :] = f_dc
+
+    # 填充 1-3 阶系数 (f_rest)
+    sh[:, 1:, 0] = f_rest[:, :15]
+    sh[:, 1:, 1] = f_rest[:, 15:30]
+    sh[:, 1:, 2] = f_rest[:, 30:]
+
+    # 8. 相乘求和并进行 Sigmoid 激活得到最终 RGB 颜色
+    raw_rgb = torch.sum(sh * Y.unsqueeze(-1), dim=1)
+    return torch.sigmoid(raw_rgb)
