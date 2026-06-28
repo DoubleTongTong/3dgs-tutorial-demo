@@ -2,10 +2,8 @@ import torch
 from util import project_points, inverse_2x2
 
 
-def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, cy, camera2world, sigma=None, near=2e-3, far=100, pixelGuard=64, tile_size=16, min_conic=1e-6, chi_square_clip=9.21, alpha_max=0.99, alpha_cutoff=1.0/255.0):
+def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, cy, camera2world, sigma, near=2e-3, far=100, pixelGuard=64, tile_size=16, min_conic=1e-6, chi_square_clip=9.21, alpha_max=0.99, alpha_cutoff=1.0/255.0):
     N = pos.shape[0]
-    if sigma is None:
-        sigma = torch.eye(3, device=pos.device, dtype=pos.dtype).unsqueeze(0).repeat(N, 1, 1)
 
     # 1. 投影 3D 点到 2D 屏幕坐标
     uv, x_cam, y_cam, z_cam = project_points(pos, height, width, fx, fy, cx, cy, camera2world)
@@ -235,3 +233,49 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
         image_flat[pixel_idx_1D] = tile_colors
 
     return image
+
+
+class RasterizerFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, pos, colors, opacity_raw, height, width, fx, fy, cx, cy, camera2world, sigma, near=2e-3, far=100, pixelGuard=64, tile_size=16, min_conic=1e-6, chi_square_clip=9.21, alpha_max=0.99, alpha_cutoff=1.0/255.0):
+        ctx.save_for_backward(pos, colors, opacity_raw)
+        ctx.sigma = sigma
+
+        img = gaussian_rasterization(
+            pos, colors, opacity_raw, height, width, fx, fy, cx, cy, camera2world,
+            sigma=sigma, near=near, far=far, pixelGuard=pixelGuard, tile_size=tile_size,
+            min_conic=min_conic, chi_square_clip=chi_square_clip, alpha_max=alpha_max, alpha_cutoff=alpha_cutoff
+        )
+        return img
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        pos, colors, opacity_raw = ctx.saved_tensors
+        sigma = ctx.sigma
+
+        grad_pos = torch.zeros_like(pos)
+        grad_colors = torch.zeros_like(colors)
+        grad_opacity_raw = torch.zeros_like(opacity_raw)
+        grad_sigma = torch.zeros_like(sigma)
+
+        return (
+            grad_pos,
+            grad_colors,
+            grad_opacity_raw,
+            None,  # height
+            None,  # width
+            None,  # fx
+            None,  # fy
+            None,  # cx
+            None,  # cy
+            None,  # camera2world
+            grad_sigma,
+            None,  # near
+            None,  # far
+            None,  # pixelGuard
+            None,  # tile_size
+            None,  # min_conic
+            None,  # chi_square_clip
+            None,  # alpha_max
+            None,  # alpha_cutoff
+        )
