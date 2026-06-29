@@ -268,6 +268,9 @@ class RasterizerFunction(torch.autograd.Function):
         # grad_opacity_raw shape: (N,)
         grad_opacity_raw = torch.zeros_like(opacity_raw)
 
+        # 初始化排序后高斯球在相机空间下的 2D 协方差梯度
+        grad_sigma_camera_sorted = torch.zeros((inv_cov.shape[0], 2, 2), dtype=inv_cov.dtype, device=inv_cov.device)
+
         # 2. 重新进行切片循环计算梯度 (Redo Tiling Loop)
         for tile_id, start, end in zip(unique_tile_ids.tolist(), unique_starts.tolist(), unique_ends.tolist()):
             txi = tile_id % num_tiles_u
@@ -369,6 +372,32 @@ class RasterizerFunction(torch.autograd.Function):
             # 直接使用 scatter_add_ 将梯度累加回原始形状的不透明度梯度上
             orig_ids_tile = indices_onscreen[ids_tile]
             grad_opacity_raw.scatter_add_(0, orig_ids_tile, tile_grad_opacity_raw)
+
+            # 6. 计算 2D 协方差在相机空间下的梯度并累加到 grad_sigma_camera_sorted 上
+            # dL_da shape: (N_tile, P)
+            dL_da = 0.5 * alpha * tile_grad_alpha
+
+            # 计算投影中间项 x = A * Delta
+            x1 = a11 * du + a12 * dv  # (N_tile, P)
+            x2 = a12 * du + a22 * dv  # (N_tile, P)
+
+            # 计算 2D 协方差梯度分量
+            tile_grad_sig_11 = (dL_da * x1 * x1).sum(dim=1)  # (N_tile,)
+            tile_grad_sig_12 = (dL_da * x1 * x2).sum(dim=1)  # (N_tile,)
+            tile_grad_sig_22 = (dL_da * x2 * x2).sum(dim=1)  # (N_tile,)
+
+            # 堆叠成 (N_tile, 2, 2) 的 2D 协方差梯度
+            tile_grad_sigma_camera = torch.stack([
+                tile_grad_sig_11, tile_grad_sig_12,
+                tile_grad_sig_12, tile_grad_sig_22
+            ], dim=-1).view(-1, 2, 2)
+
+            # 原地原子累加到全局的相机空间协方差梯度张量上
+            grad_sigma_camera_sorted.scatter_add_(
+                0,
+                ids_tile.unsqueeze(1).unsqueeze(2).expand(-1, 2, 2),
+                tile_grad_sigma_camera
+            )
 
 
 
