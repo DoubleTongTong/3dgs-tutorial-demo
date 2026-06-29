@@ -23,7 +23,8 @@ init_colors = torch.from_numpy(pc_data[:, 3:6]).to(device).float() / 255.0
 N = pos.shape[0]
 
 # 初始化不透明度 alpha_raw (设置为 logit(0.1) = -2.1972)
-alpha_raw = torch.full((N,), -2.1972, device=device)
+initial_alpha_raw = torch.full((N,), -2.1972, device=device)
+alpha_raw = torch.nn.Parameter(initial_alpha_raw.clone())
 
 # 初始化旋转 rot_raw (设置为无旋转 [1.0, 0.0, 0.0, 0.0])
 rot_raw = torch.zeros((N, 4), device=device)
@@ -65,29 +66,32 @@ fx_h, fy_h, cx_h, cy_h = scale_intrinsics(w_half, h_half, width, height, fx, fy,
 print(f"Original Resolution: {width}x{height} | Target Resolution: {w_half}x{h_half}", flush=True)
 
 # 4. 设置优化目标图像 (读取对应的 GT 图像)
-target_image = torch.zeros((h_half, w_half, 3), device=device)
-print("Target image set to all-zero black map (no forward rendering needed).", flush=True)
+# target_image = torch.zeros((h_half, w_half, 3), device=device)
+# print("Target image set to all-zero black map (no forward rendering needed).", flush=True)
 
-# print(f"Loading GT image from {img_path}...", flush=True)
-# real_img = Image.open(img_path)
-# real_img_resized = real_img.resize((w_half, h_half), Image.Resampling.LANCZOS)
-# target_image = torch.from_numpy(np.array(real_img_resized)).to(device).float() / 255.0
+print(f"Loading GT image from {img_path}...", flush=True)
+real_img = Image.open(img_path)
+real_img_resized = real_img.resize((w_half, h_half), Image.Resampling.LANCZOS)
+target_image = torch.from_numpy(np.array(real_img_resized)).to(device).float() / 255.0
 
 # 5. 设定优化变量
 # 方式 A：使用全黑初始化 (配合真实 GT 图像优化时使用)
-# initial_colors = torch.zeros_like(init_colors)
+initial_colors = torch.zeros_like(init_colors)
 # 方式 B：使用随机颜色初始化 (配合黑图 target_image 验证梯度时使用)
-initial_colors = torch.rand_like(init_colors)
+# initial_colors = torch.rand_like(init_colors)
 # 方式 C：使用点云自带的真实颜色初始化
 # initial_colors = init_colors.clone()
 
 colors = torch.nn.Parameter(initial_colors)
 
-# 创建 Adam 优化器 (对颜色参数进行优化，学习率设为 0.02)
-optimizer = torch.optim.Adam([colors], lr=0.02)
+# 创建 Adam 优化器 (对颜色和不透明度参数进行优化)
+optimizer = torch.optim.Adam([
+    {"params": colors, "lr": 0.02},
+    {"params": alpha_raw, "lr": 0.05}
+])
 
 # 6. 核心训练/优化循环
-print("\n--- Start Real-Data Color Optimization Loop ---", flush=True)
+print("\n--- Start Real-Data Joint Color and Opacity Optimization Loop ---", flush=True)
 loss_history = []
 
 # 定义中途评估感兴趣的 Epoch 阶段 (共 9 个阶段)
@@ -110,6 +114,16 @@ for epoch in range(60):
     # 零梯度、反向传播与优化器更新
     optimizer.zero_grad()
     loss.backward()
+
+    # 验证不透明度梯度
+    if epoch == 0:
+        alpha_grad_norm = alpha_raw.grad.norm().item()
+        alpha_grad_mean = alpha_raw.grad.abs().mean().item()
+        print(f"--- Opacity Gradient Verification (Step 1) ---", flush=True)
+        print(f"alpha_raw gradient norm: {alpha_grad_norm:.6f}", flush=True)
+        print(f"alpha_raw gradient mean: {alpha_grad_mean:.6f}", flush=True)
+        print(f"----------------------------------------------", flush=True)
+
     optimizer.step()
 
     loss_val = loss.item()
@@ -125,9 +139,11 @@ with torch.no_grad():
     Image.fromarray(final_np).save("verify_optimized.png")
     print("Saved optimized result image to 'verify_optimized.png'", flush=True)
 
-# 8. 打印与初始化的平均颜色绝对差
+# 8. 打印与初始化的平均颜色和不透明度绝对差
 color_diff = torch.mean(torch.abs(colors.data - init_colors)).item()
 print(f"\nFinal optimized color mean absolute difference from initialization: {color_diff:.6f}", flush=True)
+alpha_diff = torch.mean(torch.abs(alpha_raw.data - initial_alpha_raw)).item()
+print(f"Final optimized alpha_raw mean absolute difference from initialization: {alpha_diff:.6f}", flush=True)
 
 # 9. 绘制并保存 Loss 曲线图
 plt.figure(figsize=(10, 5))
