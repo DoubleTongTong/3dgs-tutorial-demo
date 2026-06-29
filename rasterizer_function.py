@@ -266,6 +266,10 @@ class RasterizerFunction(torch.autograd.Function):
         # grad_colors shape: (N, 3)
         grad_colors = torch.zeros_like(colors)
 
+        # 初始化已排序高斯球的不透明度梯度
+        # grad_opacity_sorted shape: (N_onscreen,)
+        grad_opacity_sorted = torch.zeros_like(opacity_sorted)
+
         # 2. 重新进行切片循环计算梯度 (Redo Tiling Loop)
         for tile_id, start, end in zip(unique_tile_ids.tolist(), unique_starts.tolist(), unique_ends.tolist()):
             txi = tile_id % num_tiles_u
@@ -346,13 +350,35 @@ class RasterizerFunction(torch.autograd.Function):
             orig_ids_tile = indices_onscreen[ids_tile]
             grad_colors.scatter_add_(0, orig_ids_tile.unsqueeze(1).expand(-1, 3), tile_grad_colors)
 
+            # 5. 计算不透明度梯度（中间状态，只计算到对 alpha 的导数）
+            colors_tile = colors_sorted[ids_tile]  # (N_tile, 3)
+            cw = colors_tile.unsqueeze(1) * w.unsqueeze(-1)  # (N_tile, P, 3)
+            cw_flip = torch.flip(cw, dims=[0])  # (N_tile, P, 3)
+            s_flip = torch.cumsum(cw_flip, dim=0)  # (N_tile, P, 3)
+            s_shifted_flip = torch.cat([
+                torch.zeros((1, s_flip.shape[1], s_flip.shape[2]), device=s_flip.device, dtype=s_flip.dtype),
+                s_flip[:-1]
+            ], dim=0)  # (N_tile, P, 3)
+            s = torch.flip(s_shifted_flip, dims=[0])  # (N_tile, P, 3)
+
+            denom = torch.clamp(1.0 - alpha, min=1e-8).unsqueeze(-1)  # (N_tile, P, 1)
+            d_out_d_alpha = colors_tile.unsqueeze(1) * ti.unsqueeze(-1) - s / denom  # (N_tile, P, 3)
+
+            tile_grad_alpha = (d_out_d_alpha * grad_out_tile.unsqueeze(0)).sum(dim=-1)  # (N_tile, P)
+
+            mask_active = (alpha >= alpha_cutoff) & (alpha < alpha_max)  # (N_tile, P)
+            tile_grad_opacity = (tile_grad_alpha * G * mask_active).sum(dim=1)  # (N_tile,)
+
+            grad_opacity_sorted.scatter_add_(0, ids_tile, tile_grad_opacity)
+
 
 
         # 其他不需要计算梯度的输入参数设置为零/None
         # grad_pos shape: (N, 3)
         grad_pos = torch.zeros_like(pos)
-        # grad_opacity_raw shape: (N,)
+        # 反向投影：将排序后高斯球的梯度映射回原始输入的形状
         grad_opacity_raw = torch.zeros_like(opacity_raw)
+        grad_opacity_raw.index_add_(0, indices_onscreen, grad_opacity_sorted)
         # grad_sigma shape: (N, 3, 3)
         grad_sigma = torch.zeros_like(sigma)
 
