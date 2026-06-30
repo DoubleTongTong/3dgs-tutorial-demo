@@ -259,3 +259,61 @@ def evaluate_sh(f_dc, f_rest, points, camera_to_world, interleaved=True):
     # return torch.sigmoid(raw_rgb)
     return torch.clamp(raw_rgb + 0.5, min=0.0, max=1.0)
 
+
+def build_gaussian_from_sfm(data_path, device='cpu', dtype=torch.float32, alpha_init=0.05):
+    """
+    根据 SFM 点云数据构建 3D 高斯参数。
+    支持传入文件路径 (.npy) 或已加载的张量/数组。
+    """
+    from pytorch3d.ops import knn_points
+
+    pc_data = np.load(data_path)
+    pc_data = torch.from_numpy(pc_data)
+
+    # 提取位置与颜色，并移动到指定设备
+    pos = pc_data[:, :3].to(device=device, dtype=dtype)
+    colors = pc_data[:, 3:6].to(device=device, dtype=dtype)
+    if colors.max() > 1.0:
+        colors = colors / 255.0
+
+    N = pos.shape[0]
+
+    # 1. 0阶球谐系数 f_dc: f_dc = torch.logit(colors) / SH_C0
+    # 为数值稳定，在 logit 之前对 colors 夹断保护
+    colors_clamped = torch.clamp(colors, min=1e-4, max=1.0 - 1e-4)
+    f_dc = torch.logit(colors_clamped) / SH_C0
+
+    # 2. 1-3阶球谐系数 f_rest: 形状为 (N, 45)，初始化为全零
+    f_rest = torch.zeros((N, 45), device=device, dtype=dtype)
+
+    # 3. 旋转四元数 rot_raw: 形状为 (N, 4)，初始化为 [1, 0, 0, 0] 格式 (w, x, y, z)
+    rot_raw = torch.zeros((N, 4), device=device, dtype=dtype)
+    rot_raw[:, 0] = 1.0
+
+    # 4. 缩放参数 scale_raw: 形状为 (N, 3)，由与 3 个最近邻的平均距离的对数初始化
+    pos_batch = pos.unsqueeze(0)  # (1, N, 3)
+    # K=4，因为包含自身（距离为0），真正查询的是 3 个最近邻
+    knn_res = knn_points(pos_batch, pos_batch, K=min(4, N))
+    
+    # 获取除自身（第一个通道）以外的 3 个最近邻的平方距离
+    # knn_res.dists 形状为 (1, N, K)
+    if N > 1:
+        sq_dists = knn_res.dists[0, :, 1:]  # (N, K-1)
+        mean_dists = torch.mean(torch.sqrt(sq_dists), dim=-1, keepdim=True)  # (N, 1)
+    else:
+        mean_dists = torch.ones((N, 1), device=device, dtype=dtype) * 1e-2
+
+    scale_raw = torch.log(mean_dists.clamp(min=1e-6)).repeat(1, 3)
+
+    # 5. 不透明度原始参数 alpha_raw: 形状为 (N,)，对真实不透明度做 logit 变换
+    alpha_raw_val = torch.logit(torch.tensor(alpha_init, device=device, dtype=dtype)).item()
+    alpha_raw = torch.full((N,), alpha_raw_val, device=device, dtype=dtype)
+
+    return {
+        "pos": pos,
+        "f_dc": f_dc,
+        "f_rest": f_rest,
+        "alpha_raw": alpha_raw,
+        "rot_raw": rot_raw,
+        "scale_raw": scale_raw
+    }
