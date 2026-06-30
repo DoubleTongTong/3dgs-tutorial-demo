@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from rasterizer_function import RasterizerFunction
-from util import w2c_to_c2w, compute_3d_covariance, scale_intrinsics, load_cameras, build_gaussian_from_sfm, evaluate_sh
+from util import w2c_to_c2w, compute_3d_covariance, scale_intrinsics, load_cameras, build_gaussian_from_sfm, evaluate_sh, makeOptimizer
 
 # 1. 配置 GPU 设备与数据路径
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -85,14 +85,15 @@ rot_raw = torch.nn.Parameter(initial_rot_raw.clone())
 scale_raw = torch.nn.Parameter(initial_scale_raw.clone())
 
 # 创建 Adam 优化器 (对球谐系数、位置、不透明度、缩放和旋转参数进行联合优化)
-optimizer = torch.optim.Adam([
-    {"params": f_dc, "lr": 0.02},
-    {"params": f_rest, "lr": 0.02},
-    {"params": pos, "lr": 0.002},
-    {"params": alpha_raw, "lr": 0.05},
-    {"params": scale_raw, "lr": 0.005},
-    {"params": rot_raw, "lr": 0.002}
-])
+opt_params = {
+    "pos": pos,
+    "f_dc": f_dc,
+    "f_rest": f_rest,
+    "alpha_raw": alpha_raw,
+    "scale_raw": scale_raw,
+    "rot_raw": rot_raw
+}
+optimizer = makeOptimizer(opt_params)
 
 # 6. 核心训练/优化循环
 print("\n--- Start Real-Data Joint Parameter Optimization Loop ---", flush=True)

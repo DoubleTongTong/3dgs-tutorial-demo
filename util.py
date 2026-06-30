@@ -317,3 +317,18 @@ def build_gaussian_from_sfm(data_path, device='cpu', dtype=torch.float32, alpha_
         "rot_raw": rot_raw,
         "scale_raw": scale_raw
     }
+
+
+def makeOptimizer(parameters, lr_pos=1e-3, lr_fdc=1e-2, lr_frest=1e-2, lr_opacity=5e-3, lr_scale=1e-3, lr_q=5e-4):
+    """
+    Create an Adam optimizer for 3D Gaussian Splatting parameters with custom learning rates.
+    """
+    param_groups = [
+        {"params": parameters["pos"], "lr": lr_pos, "name": "pos"},
+        {"params": parameters["f_dc"], "lr": lr_fdc, "name": "f_dc"},
+        {"params": parameters["f_rest"], "lr": lr_frest, "name": "f_rest"},
+        {"params": parameters["alpha_raw"], "lr": lr_opacity, "name": "alpha_raw"},
+        {"params": parameters["scale_raw"], "lr": lr_scale, "name": "scale_raw"},
+        {"params": parameters["rot_raw"], "lr": lr_q, "name": "rot_raw"},
+    ]
+    return torch.optim.Adam(param_groups, betas=(0.9, 0.99), eps=1e-15)
