@@ -268,9 +268,11 @@ class RasterizerFunction(torch.autograd.Function):
         # grad_out_flat shape: (height * width, 3)
         grad_out_flat = grad_out.view(-1, 3)
 
-        # 初始化原始输入的颜色和不透明度以及协方差梯度
+        # 初始化原始输入的颜色、位置、不透明度以及协方差梯度
         # grad_colors shape: (N, 3)
         grad_colors = torch.zeros_like(colors)
+        # grad_pos shape: (N, 3)
+        grad_pos = torch.zeros_like(pos)
         # grad_opacity_raw shape: (N,)
         grad_opacity_raw = torch.zeros_like(opacity_raw)
         # grad_sigma shape: (N, 3, 3)
@@ -406,9 +408,23 @@ class RasterizerFunction(torch.autograd.Function):
                 tile_grad_sigma
             )
 
+            # 7. 计算 3D 位置在世界空间下的梯度并累加到 grad_pos 上
+            # 沿着 u, v 维度对所有像素求和
+            tile_grad_u = (2.0 * dL_da * x1).sum(dim=1)  # (N_tile,)
+            tile_grad_v = (2.0 * dL_da * x2).sum(dim=1)  # (N_tile,)
+            tile_grad_uv = torch.stack([tile_grad_u, tile_grad_v], dim=-1)  # (N_tile, 2)
+
+            # 经由投影变换的雅可比矩阵 T_tile (N_tile, 2, 3) 映射到 3D 世界空间
+            tile_grad_pos = (tile_grad_uv.unsqueeze(1) @ T_tile).squeeze(1)  # (N_tile, 3)
+
+            # 累加到 grad_pos
+            grad_pos.scatter_add_(
+                0,
+                orig_ids_tile.unsqueeze(1).expand(-1, 3),
+                tile_grad_pos
+            )
+
         # 其他不需要计算梯度的输入参数设置为零/None
-        # grad_pos shape: (N, 3)
-        grad_pos = torch.zeros_like(pos)
 
         return (
             grad_pos,
