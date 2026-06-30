@@ -21,8 +21,8 @@ class RasterizerFunction(torch.autograd.Function):
         J[:, 0, 2] = -(fx * x_cam) / (z_cam ** 2)
         J[:, 1, 2] = -(fy * y_cam) / (z_cam ** 2)
 
-        TMP = W.unsqueeze(0) @ sigma @ W.unsqueeze(0).transpose(1, 2)
-        sigma_camera = J @ TMP @ J.transpose(1, 2)
+        T = J @ W.unsqueeze(0)
+        sigma_camera = T @ sigma @ T.transpose(1, 2)
 
         # 3. 软边缘视锥剔除 (pixelGuard): 在图像边缘扩展 pixelGuard 像素的保护带
         mask = (u > -pixelGuard) & (u < width + pixelGuard) & \
@@ -37,6 +37,7 @@ class RasterizerFunction(torch.autograd.Function):
         opacity_raw_v = opacity_raw[mask]
         sigma_camera_v = sigma_camera[mask]
         orig_indices_v = orig_indices[mask]
+        T_v = T[mask]
 
         sigma_camera_v = (sigma_camera_v + sigma_camera_v.transpose(1, 2)) * 0.5
         evals, evex = torch.linalg.eigh(sigma_camera_v)
@@ -53,6 +54,7 @@ class RasterizerFunction(torch.autograd.Function):
         opacity_raw_v = opacity_raw_v[keep]
         sigma_camera_v = sigma_camera_v[keep]
         orig_indices_keep = orig_indices_v[keep]
+        T_v = T_v[keep]
 
         # 5. 透明度重参数化 (Sigmoid & Clamp)
         opacity_v = torch.sigmoid(opacity_raw_v)
@@ -66,6 +68,7 @@ class RasterizerFunction(torch.autograd.Function):
         opacity_sorted = opacity_v[order]
         sigma_camera_sorted = sigma_camera_v[order]
         orig_indices_sorted = orig_indices_keep[order]
+        T_sorted = T_v[order]
 
         evals_v = evals[keep]
         evals_sorted = evals_v[order]
@@ -87,6 +90,7 @@ class RasterizerFunction(torch.autograd.Function):
         opacity_sorted = opacity_sorted[onscreen]
         sigma_camera_sorted = sigma_camera_sorted[onscreen]
         indices_onscreen = orig_indices_sorted[onscreen]
+        T_onscreen = T_sorted[onscreen]
 
         u_min = u_min[onscreen].clamp(0, width - 1)
         u_max = u_max[onscreen].clamp(0, width - 1)
@@ -148,7 +152,8 @@ class RasterizerFunction(torch.autograd.Function):
         ctx.save_for_backward(
             pos, colors, opacity_raw, sigma,
             u_sorted, v_sorted, colors_sorted, opacity_sorted, inv_cov,
-            gaussian_ids_sorted, unique_tile_ids, unique_starts, unique_ends, indices_onscreen
+            gaussian_ids_sorted, unique_tile_ids, unique_starts, unique_ends, indices_onscreen,
+            T_onscreen
         )
         ctx.meta = {
             'height': height,
@@ -247,7 +252,8 @@ class RasterizerFunction(torch.autograd.Function):
         (
             pos, colors, opacity_raw, sigma,
             u_sorted, v_sorted, colors_sorted, opacity_sorted, inv_cov,
-            gaussian_ids_sorted, unique_tile_ids, unique_starts, unique_ends, indices_onscreen
+            gaussian_ids_sorted, unique_tile_ids, unique_starts, unique_ends, indices_onscreen,
+            T_onscreen
         ) = ctx.saved_tensors
 
         height = ctx.meta['height']
@@ -262,14 +268,13 @@ class RasterizerFunction(torch.autograd.Function):
         # grad_out_flat shape: (height * width, 3)
         grad_out_flat = grad_out.view(-1, 3)
 
-        # 初始化原始输入的颜色和不透明度梯度
+        # 初始化原始输入的颜色和不透明度以及协方差梯度
         # grad_colors shape: (N, 3)
         grad_colors = torch.zeros_like(colors)
         # grad_opacity_raw shape: (N,)
         grad_opacity_raw = torch.zeros_like(opacity_raw)
-
-        # 初始化排序后高斯球在相机空间下的 2D 协方差梯度
-        grad_sigma_camera_sorted = torch.zeros((inv_cov.shape[0], 2, 2), dtype=inv_cov.dtype, device=inv_cov.device)
+        # grad_sigma shape: (N, 3, 3)
+        grad_sigma = torch.zeros_like(sigma)
 
         # 2. 重新进行切片循环计算梯度 (Redo Tiling Loop)
         for tile_id, start, end in zip(unique_tile_ids.tolist(), unique_starts.tolist(), unique_ends.tolist()):
@@ -373,7 +378,7 @@ class RasterizerFunction(torch.autograd.Function):
             orig_ids_tile = indices_onscreen[ids_tile]
             grad_opacity_raw.scatter_add_(0, orig_ids_tile, tile_grad_opacity_raw)
 
-            # 6. 计算 2D 协方差在相机空间下的梯度并累加到 grad_sigma_camera_sorted 上
+            # 6. 计算 3D 协方差在世界空间下的梯度并累加到 grad_sigma 上
             # dL_da shape: (N_tile, P)
             dL_da = 0.5 * alpha * tile_grad_alpha
 
@@ -392,20 +397,18 @@ class RasterizerFunction(torch.autograd.Function):
                 tile_grad_sig_12, tile_grad_sig_22
             ], dim=-1).view(-1, 2, 2)
 
-            # 原地原子累加到全局的相机空间协方差梯度张量上
-            grad_sigma_camera_sorted.scatter_add_(
+            T_tile = T_onscreen[ids_tile]
+            tile_grad_sigma = T_tile.transpose(1, 2) @ tile_grad_sigma_camera @ T_tile
+
+            grad_sigma.scatter_add_(
                 0,
-                ids_tile.unsqueeze(1).unsqueeze(2).expand(-1, 2, 2),
-                tile_grad_sigma_camera
+                orig_ids_tile.unsqueeze(1).unsqueeze(2).expand(-1, 3, 3),
+                tile_grad_sigma
             )
-
-
 
         # 其他不需要计算梯度的输入参数设置为零/None
         # grad_pos shape: (N, 3)
         grad_pos = torch.zeros_like(pos)
-        # grad_sigma shape: (N, 3, 3)
-        grad_sigma = torch.zeros_like(sigma)
 
         return (
             grad_pos,

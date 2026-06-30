@@ -27,15 +27,13 @@ initial_alpha_raw = torch.full((N,), -2.1972, device=device)
 alpha_raw = torch.nn.Parameter(initial_alpha_raw.clone())
 
 # 初始化旋转 rot_raw (设置为无旋转 [1.0, 0.0, 0.0, 0.0])
-rot_raw = torch.zeros((N, 4), device=device)
-rot_raw[:, 0] = 1.0
+initial_rot_raw = torch.zeros((N, 4), device=device)
+initial_rot_raw[:, 0] = 1.0
+rot_raw = torch.nn.Parameter(initial_rot_raw)
 
-# 初始化缩放 scale_raw (设置为 log(0.01) = -4.60517)
-scale_raw = torch.log(torch.full((N, 3), 0.01, device=device))
-
-# 计算 3D 协方差矩阵 (sigma)
-print("Computing 3D covariance matrices...", flush=True)
-sigma = compute_3d_covariance(scale_raw, rot_raw)
+# 初始化缩放 scale_raw (设置为各向异性缩放，避免旋转梯度为 0)
+initial_scale_raw = torch.log(torch.tensor([0.01, 0.02, 0.03], device=device).unsqueeze(0).repeat(N, 1))
+scale_raw = torch.nn.Parameter(initial_scale_raw)
 
 # 3. 加载相机参数并进行 4 倍降采样
 print("Loading and downscaling camera intrinsics...", flush=True)
@@ -76,22 +74,24 @@ target_image = torch.from_numpy(np.array(real_img_resized)).to(device).float() /
 
 # 5. 设定优化变量
 # 方式 A：使用全黑初始化 (配合真实 GT 图像优化时使用)
-initial_colors = torch.zeros_like(init_colors)
+# initial_colors = torch.zeros_like(init_colors)
 # 方式 B：使用随机颜色初始化 (配合黑图 target_image 验证梯度时使用)
 # initial_colors = torch.rand_like(init_colors)
 # 方式 C：使用点云自带的真实颜色初始化
-# initial_colors = init_colors.clone()
+initial_colors = init_colors.clone()
 
 colors = torch.nn.Parameter(initial_colors)
 
-# 创建 Adam 优化器 (对颜色和不透明度参数进行优化)
+# 创建 Adam 优化器 (对颜色、不透明度、缩放和旋转参数进行优化)
 optimizer = torch.optim.Adam([
     {"params": colors, "lr": 0.02},
-    {"params": alpha_raw, "lr": 0.05}
+    {"params": alpha_raw, "lr": 0.05},
+    {"params": scale_raw, "lr": 0.005},
+    {"params": rot_raw, "lr": 0.002}
 ])
 
 # 6. 核心训练/优化循环
-print("\n--- Start Real-Data Joint Color and Opacity Optimization Loop ---", flush=True)
+print("\n--- Start Real-Data Joint Parameter Optimization Loop ---", flush=True)
 loss_history = []
 
 # 定义中途评估感兴趣的 Epoch 阶段 (共 9 个阶段)
@@ -99,7 +99,10 @@ interested_epochs = [1, 7, 14, 21, 28, 35, 42, 49, 60]
 stage_images = {}
 
 for epoch in range(60):
-    # 渲染当前优化器下颜色的图像
+    # 动态计算当前参数下的 3D 协方差矩阵 (sigma)
+    sigma = compute_3d_covariance(scale_raw, rot_raw)
+
+    # 渲染当前优化器下参数的图像
     pred_image = RasterizerFunction.apply(
         pos, colors, alpha_raw, h_half, w_half, fx_h, fy_h, cx_h, cy_h, c2w, sigma
     )
@@ -115,14 +118,24 @@ for epoch in range(60):
     optimizer.zero_grad()
     loss.backward()
 
-    # 验证不透明度梯度
+    # 验证不透明度与协方差参数梯度
     if epoch == 0:
         alpha_grad_norm = alpha_raw.grad.norm().item()
         alpha_grad_mean = alpha_raw.grad.abs().mean().item()
-        print(f"--- Opacity Gradient Verification (Step 1) ---", flush=True)
+        print(f"--- Gradient Verification (Step 1) ---", flush=True)
         print(f"alpha_raw gradient norm: {alpha_grad_norm:.6f}", flush=True)
         print(f"alpha_raw gradient mean: {alpha_grad_mean:.6f}", flush=True)
-        print(f"----------------------------------------------", flush=True)
+
+        scale_grad_norm = scale_raw.grad.norm().item() if scale_raw.grad is not None else 0.0
+        scale_grad_mean = scale_raw.grad.abs().mean().item() if scale_raw.grad is not None else 0.0
+        print(f"scale_raw gradient norm: {scale_grad_norm:.6f}", flush=True)
+        print(f"scale_raw gradient mean: {scale_grad_mean:.6f}", flush=True)
+
+        rot_grad_norm = rot_raw.grad.norm().item() if rot_raw.grad is not None else 0.0
+        rot_grad_mean = rot_raw.grad.abs().mean().item() if rot_raw.grad is not None else 0.0
+        print(f"rot_raw gradient norm:   {rot_grad_norm:.6f}", flush=True)
+        print(f"rot_raw gradient mean:   {rot_grad_mean:.6f}", flush=True)
+        print(f"--------------------------------------", flush=True)
 
     optimizer.step()
 
@@ -132,6 +145,7 @@ for epoch in range(60):
 
 # 7. 渲染并保存最终优化后的图像以供目视对比
 with torch.no_grad():
+    sigma = compute_3d_covariance(scale_raw, rot_raw)
     final_image = RasterizerFunction.apply(
         pos, colors, alpha_raw, h_half, w_half, fx_h, fy_h, cx_h, cy_h, c2w, sigma
     )
@@ -144,6 +158,10 @@ color_diff = torch.mean(torch.abs(colors.data - init_colors)).item()
 print(f"\nFinal optimized color mean absolute difference from initialization: {color_diff:.6f}", flush=True)
 alpha_diff = torch.mean(torch.abs(alpha_raw.data - initial_alpha_raw)).item()
 print(f"Final optimized alpha_raw mean absolute difference from initialization: {alpha_diff:.6f}", flush=True)
+scale_diff = torch.mean(torch.abs(scale_raw.data - initial_scale_raw)).item()
+print(f"Final optimized scale_raw mean absolute difference from initialization: {scale_diff:.6f}", flush=True)
+rot_diff = torch.mean(torch.abs(rot_raw.data - initial_rot_raw)).item()
+print(f"Final optimized rot_raw mean absolute difference from initialization:   {rot_diff:.6f}", flush=True)
 
 # 9. 绘制并保存 Loss 曲线图
 plt.figure(figsize=(10, 5))
