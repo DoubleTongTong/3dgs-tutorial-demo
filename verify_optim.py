@@ -66,34 +66,17 @@ for i in range(len(c2ws)):
         training_indices.append(i)
 print(f"Dataset split: {len(training_indices)} train images, {len(testing_indices)} test images.", flush=True)
 
-# 5. 定义 SSIM 与混合损失函数
-def ssim(img1, img2, window_size=11):
-    img1 = img1.permute(2, 0, 1).unsqueeze(0)
-    img2 = img2.permute(2, 0, 1).unsqueeze(0)
-
-    gauss = torch.Tensor([np.exp(-(x - window_size//2)**2 / 4.5) for x in range(window_size)])
-    kernel1d = (gauss / gauss.sum()).unsqueeze(1)
-    kernel2d = kernel1d.mm(kernel1d.t()).float().unsqueeze(0).unsqueeze(0)
-
-    channels = img1.size(1)
-    window = kernel2d.expand(channels, 1, window_size, window_size).to(img1.device)
-
-    mu1 = F.conv2d(img1, window, padding=window_size//2, groups=channels)
-    mu2 = F.conv2d(img2, window, padding=window_size//2, groups=channels)
-
-    mu1_sq, mu2_sq, mu1_mu2 = mu1.pow(2), mu2.pow(2), mu1 * mu2
-
-    sigma1_sq = F.conv2d(img1 * img1, window, padding=window_size//2, groups=channels) - mu1_sq
-    sigma2_sq = F.conv2d(img2 * img2, window, padding=window_size//2, groups=channels) - mu2_sq
-    sigma12 = F.conv2d(img1 * img2, window, padding=window_size//2, groups=channels) - mu1_mu2
-
-    C1, C2 = 0.01 ** 2, 0.03 ** 2
-    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
-    return ssim_map.mean()
+# 5. 使用 TorchMetrics 定义 SSIM 与混合损失函数
+from torchmetrics.functional.image import structural_similarity_index_measure as ssim
+from torchmetrics.functional.image import peak_signal_noise_ratio as psnr
 
 def compute_loss(pred, target):
+    # 将形状从 (H, W, C) 转换为 (1, C, H, W) 以符合 TorchMetrics 的要求
+    pred_trans = pred.permute(2, 0, 1).unsqueeze(0)
+    target_trans = target.permute(2, 0, 1).unsqueeze(0)
+
     l1 = F.l1_loss(pred, target)
-    ssim_val = ssim(pred, target)
+    ssim_val = ssim(pred_trans, target_trans)
     return 0.8 * l1 + 0.2 * (1.0 - ssim_val)
 
 # 6. 设定优化变量与 PyTorch 参数
@@ -120,6 +103,7 @@ import os
 from tqdm import tqdm
 num_iterations = int(os.environ.get("NUM_ITERATIONS", 7000))
 loss_history = []
+psnr_history = []
 
 for iteration in tqdm(range(num_iterations)):
     # 随机选择一个训练图像视角
@@ -151,8 +135,14 @@ for iteration in tqdm(range(num_iterations)):
     loss_val = loss.item()
     loss_history.append(loss_val)
 
+    # 计算并记录 PSNR (使用 torchmetrics)
+    pred_trans = pred_image.detach().permute(2, 0, 1).unsqueeze(0)
+    target_trans = target_image.permute(2, 0, 1).unsqueeze(0)
+    psnr_val = psnr(pred_trans, target_trans, data_range=1.0).item()
+    psnr_history.append(psnr_val)
+
     if (iteration + 1) % 500 == 0 or iteration == 0:
-        print(f"Iteration {iteration+1:04d} | Loss: {loss_val:.6f}", flush=True)
+        print(f"Iteration {iteration+1:04d} | Loss: {loss_val:.6f} | PSNR: {psnr_val:.4f}", flush=True)
 
 # 8. 渲染并保存最终优化后的图像 (从测试集选择一个视角以验证效果)
 with torch.no_grad():
@@ -167,13 +157,25 @@ with torch.no_grad():
     Image.fromarray(final_np).save("verify_optimized.png")
     print(f"Saved optimized test view rendering to 'verify_optimized.png'", flush=True)
 
-# 9. 绘制并保存 Loss 曲线图
-plt.figure(figsize=(10, 5))
-plt.plot(range(1, len(loss_history) + 1), loss_history, color='b', label='Joint Loss')
-plt.title("Joint Loss Convergence Curve (L1 + SSIM)")
-plt.xlabel("Iteration")
-plt.ylabel("Loss")
-plt.grid(True)
-plt.legend()
+# 9. 绘制并保存 Loss 与 PSNR 曲线图
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+
+# Loss 曲线
+ax1.plot(range(1, len(loss_history) + 1), loss_history, color='b', label='Joint Loss')
+ax1.set_title("Joint Loss Convergence Curve (L1 + SSIM)")
+ax1.set_xlabel("Iteration")
+ax1.set_ylabel("Loss")
+ax1.grid(True)
+ax1.legend()
+
+# PSNR 曲线
+ax2.plot(range(1, len(psnr_history) + 1), psnr_history, color='r', label='PSNR')
+ax2.set_title("PSNR Convergence Curve")
+ax2.set_xlabel("Iteration")
+ax2.set_ylabel("PSNR (dB)")
+ax2.grid(True)
+ax2.legend()
+
+plt.tight_layout()
 plt.savefig("verify_loss.png")
-print("Saved convergence curve plot to 'verify_loss.png'", flush=True)
+print("Saved convergence curves plot to 'verify_loss.png'", flush=True)
