@@ -43,19 +43,16 @@ width = cam_meta['width']
 fx, fy = cam_meta['fx'], cam_meta['fy']
 cx, cy = width / 2, height / 2
 
-# 4. 加载与缩放所有目标图像并做 Train/Test 划分
-downscale = 4
-w_half = int(width / downscale)
-h_half = int(height / downscale)
-fx_h, fy_h, cx_h, cy_h = scale_intrinsics(w_half, h_half, width, height, fx, fy, cx, cy)
-
+# 4. 加载目标图像并做 Train/Test 划分 (不再固定降采样)
 target_images = []
-print("Loading and resizing all target images...", flush=True)
+print("Loading all target images...", flush=True)
 for img_path in image_paths:
     real_img = Image.open(img_path)
-    real_img_resized = real_img.resize((w_half, h_half), Image.Resampling.LANCZOS)
-    target_image = torch.from_numpy(np.array(real_img_resized)).to(device).float() / 255.0
+    target_image = torch.from_numpy(np.array(real_img)).to(device).float() / 255.0
     target_images.append(target_image)
+
+h_base, w_base = target_images[0].shape[0], target_images[0].shape[1]
+fx_base, fy_base, cx_base, cy_base = scale_intrinsics(w_base, h_base, width, height, fx, fy, cx, cy)
 
 training_indices = []
 testing_indices = []
@@ -113,6 +110,27 @@ for iteration in tqdm(range(num_iterations)):
     c2w = c2ws[view_index]
     target_image = target_images[view_index]
 
+    # 动态分辨率缩放 (Warm-up)
+    if iteration < 250:
+        S = 0.25
+    elif iteration < 500:
+        S = 0.5
+    else:
+        S = 1.0
+
+    H_c = int(S * h_base)
+    W_c = int(S * w_base)
+
+    if S < 1.0:
+        fx_c, fy_c, cx_c, cy_c = scale_intrinsics(W_c, H_c, w_base, h_base, fx_base, fy_base, cx_base, cy_base)
+        # 缩放目标图像
+        target_image_trans = target_image.permute(2, 0, 1).unsqueeze(0)
+        target_image_resized = F.interpolate(target_image_trans, size=(H_c, W_c), mode='bilinear', align_corners=False)
+        target_image_c = target_image_resized.squeeze(0).permute(1, 2, 0)
+    else:
+        fx_c, fy_c, cx_c, cy_c = fx_base, fy_base, cx_base, cy_base
+        target_image_c = target_image
+
     # 动态计算当前参数下的 3D 协方差矩阵 (sigma)
     sigma = compute_3d_covariance(scale_raw, rot_raw)
 
@@ -121,11 +139,11 @@ for iteration in tqdm(range(num_iterations)):
 
     # 渲染当前优化器下参数的图像
     pred_image = RasterizerFunction.apply(
-        pos, colors, alpha_raw, h_half, w_half, fx_h, fy_h, cx_h, cy_h, c2w, sigma
+        pos, colors, alpha_raw, H_c, W_c, fx_c, fy_c, cx_c, cy_c, c2w, sigma
     )
 
     # 计算 L1 + SSIM 损失
-    loss = compute_loss(pred_image, target_image)
+    loss = compute_loss(pred_image, target_image_c)
 
     # 零梯度、反向传播与优化器更新
     optimizer.zero_grad()
@@ -137,7 +155,7 @@ for iteration in tqdm(range(num_iterations)):
 
     # 计算并记录 PSNR (使用 torchmetrics)
     pred_trans = pred_image.detach().permute(2, 0, 1).unsqueeze(0)
-    target_trans = target_image.permute(2, 0, 1).unsqueeze(0)
+    target_trans = target_image_c.permute(2, 0, 1).unsqueeze(0)
     psnr_val = psnr(pred_trans, target_trans, data_range=1.0).item()
     psnr_history.append(psnr_val)
 
@@ -151,7 +169,7 @@ with torch.no_grad():
     sigma = compute_3d_covariance(scale_raw, rot_raw)
     final_colors = evaluate_sh(f_dc, f_rest, pos, test_c2w, interleaved=False)
     final_image = RasterizerFunction.apply(
-        pos, final_colors, alpha_raw, h_half, w_half, fx_h, fy_h, cx_h, cy_h, test_c2w, sigma
+        pos, final_colors, alpha_raw, h_base, w_base, fx_base, fy_base, cx_base, cy_base, test_c2w, sigma
     )
     final_np = (final_image.clamp(0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
     Image.fromarray(final_np).save("verify_optimized.png")
