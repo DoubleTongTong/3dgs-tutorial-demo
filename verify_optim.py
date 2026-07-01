@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from rasterizer_function import RasterizerFunction
-from util import w2c_to_c2w, compute_3d_covariance, scale_intrinsics, load_cameras, build_gaussian_from_sfm, evaluate_sh, makeOptimizer
+from util import w2c_to_c2w, compute_3d_covariance, scale_intrinsics, load_cameras, build_gaussian_from_sfm, evaluate_sh, makeOptimizer, clone_gaussians, split_gaussians, prune_gaussians, tensor_to_pil
 
 # 1. 配置 GPU 设备与数据路径
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -113,6 +113,12 @@ opt_params = {
 }
 optimizer = makeOptimizer(opt_params)
 
+# 自适应密度控制（Densification）超参数
+tau_pos = 0.0002          # 触发分裂/克隆的位置梯度阈值 (2e-4)
+tau_scale = 0.01          # 区分克隆与分裂的高斯尺寸缩放阈值
+epsilon_alpha = 0.005      # 剪枝时的低透明度截断阈值
+
+
 # 7. 核心训练/优化循环
 print("\n--- Start Joint Parameter Optimization Loop ---", flush=True)
 import os
@@ -170,6 +176,49 @@ for iteration in tqdm(range(num_iterations)):
     loss.backward()
     optimizer.step()
 
+    # 自适应密度控制与剪枝 (Densification & Pruning)
+    # 起始步：500 步，结束步：3000 步，每 100 步触发一次
+    if iteration > 500 and iteration <= 3000 and iteration % 100 == 0:
+        # 1. 筛选高梯度高斯点 (TODO)
+        is_high_grad = torch.zeros(pos.shape[0], dtype=torch.bool, device=device)
+
+        # 2. 计算高斯缩放
+        scales = torch.exp(scale_raw)  # scale_raw shape: (N, 3)
+        max_scales = torch.max(scales, dim=1).values
+        is_big = max_scales > tau_scale
+        is_small = ~is_big
+
+        mask_clone = is_high_grad & is_small
+        mask_split = is_high_grad & is_big
+
+        # 3. 执行克隆
+        if mask_clone.any():
+            opt_params, optimizer = clone_gaussians(mask_clone, opt_params, optimizer)
+
+        # 4. 执行分裂
+        if mask_split.any():
+            opt_params, optimizer = split_gaussians(mask_split, opt_params, optimizer)
+
+        # 6. 执行剪枝（剔除透明高斯点）
+        # 重新读取当前最新的 alpha_raw 形状
+        alpha_raw_latest = opt_params["alpha_raw"]
+        mask_prune = torch.sigmoid(alpha_raw_latest) < epsilon_alpha
+
+        # 为了防止剪掉所有的高斯，至少保留一个
+        if mask_prune.all():
+            mask_prune[0] = False
+
+        if mask_prune.any():
+            opt_params, optimizer = prune_gaussians(mask_prune, opt_params, optimizer)
+
+        # 同步局部变量以配合后续循环迭代
+        pos = opt_params["pos"]
+        f_dc = opt_params["f_dc"]
+        f_rest = opt_params["f_rest"]
+        alpha_raw = opt_params["alpha_raw"]
+        scale_raw = opt_params["scale_raw"]
+        rot_raw = opt_params["rot_raw"]
+
     loss_val = loss.item()
     loss_history.append(loss_val)
 
@@ -191,8 +240,7 @@ with torch.no_grad():
     final_image = RasterizerFunction.apply(
         pos, final_colors, alpha_raw, h_base, w_base, fx_base, fy_base, cx_base, cy_base, test_c2w, sigma
     )
-    final_np = (final_image.clamp(0.0, 1.0).cpu().numpy() * 255.0).astype(np.uint8)
-    Image.fromarray(final_np).save("verify_optimized.png")
+    tensor_to_pil(final_image).save("verify_optimized.png")
     print(f"Saved optimized test view rendering to 'verify_optimized.png'", flush=True)
 
 # 9. 绘制并保存 Loss 与 PSNR 曲线图

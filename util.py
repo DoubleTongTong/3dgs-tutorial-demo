@@ -294,7 +294,7 @@ def build_gaussian_from_sfm(data_path, device='cpu', dtype=torch.float32, alpha_
     pos_batch = pos.unsqueeze(0)  # (1, N, 3)
     # K=4，因为包含自身（距离为0），真正查询的是 3 个最近邻
     knn_res = knn_points(pos_batch, pos_batch, K=min(4, N))
-    
+
     # 获取除自身（第一个通道）以外的 3 个最近邻的平方距离
     # knn_res.dists 形状为 (1, N, K)
     if N > 1:
@@ -332,3 +332,39 @@ def makeOptimizer(parameters, lr_pos=1.6e-4, lr_fdc=2.5e-3, lr_frest=1.25e-4, lr
         {"params": parameters["rot_raw"], "lr": lr_q, "name": "rot_raw"},
     ]
     return torch.optim.Adam(param_groups, betas=(0.9, 0.99), eps=1e-15)
+
+
+def tensor_to_pil(tensor):
+    """
+    Convert a PyTorch tensor (H, W, 3) or (3, H, W) or (1, 3, H, W) to a PIL Image.
+    """
+    from PIL import Image
+    if tensor.dim() == 4:
+        tensor = tensor.squeeze(0)
+    # If shape is (C, H, W), permute to (H, W, C)
+    if tensor.shape[0] == 3 or tensor.shape[0] == 1:
+        tensor = tensor.permute(1, 2, 0)
+
+    arr = (tensor.detach().cpu().clamp(0.0, 1.0).numpy() * 255.0).astype(np.uint8)
+    return Image.fromarray(arr)
+
+
+def clone_gaussians(mask_clone, parameters, optimizer):
+    """
+    Clone selected Gaussians. (TODO)
+    """
+    return parameters, optimizer
+
+
+def split_gaussians(mask_split, parameters, optimizer, N=2):
+    """
+    Split selected Gaussians. (TODO)
+    """
+    return parameters, optimizer
+
+
+def prune_gaussians(mask_prune, parameters, optimizer):
+    """
+    Prune selected Gaussians. (TODO)
+    """
+    return parameters, optimizer
