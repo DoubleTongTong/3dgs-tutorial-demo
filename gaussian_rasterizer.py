@@ -15,11 +15,14 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
     W = camera2world[:3, :3].T
 
     # 构建雅可比矩阵 J
+    z_cam_clamped = torch.clamp(z_cam, min=1e-6)
+    inf_z = 1.0 / z_cam_clamped
+    inf_z2 = inf_z * inf_z
     J = torch.zeros((N, 2, 3), device=pos.device, dtype=pos.dtype)
-    J[:, 0, 0] = fx / z_cam
-    J[:, 1, 1] = fy / z_cam
-    J[:, 0, 2] = -(fx * x_cam) / (z_cam ** 2)
-    J[:, 1, 2] = -(fy * y_cam) / (z_cam ** 2)
+    J[:, 0, 0] = fx * inf_z
+    J[:, 1, 1] = fy * inf_z
+    J[:, 0, 2] = -fx * x_cam * inf_z2
+    J[:, 1, 2] = -fy * y_cam * inf_z2
 
     # 矩阵乘法
     TMP = W.unsqueeze(0) @ sigma @ W.unsqueeze(0).transpose(1, 2)
@@ -223,8 +226,9 @@ def gaussian_rasterization(pos, colors, opacity_raw, height, width, fx, fy, cx, 
             ti[:-1]
         ], dim=0)
 
-        # 计算权重 w_i = alpha_i * T_i
-        w = alpha * ti  # (N, P)
+        # 计算权重 w_i = alpha_i * T_i 并应用存活掩码以提升数值稳定性
+        alive = (ti > 1e-4).to(alpha.dtype)
+        w = alpha * ti * alive  # (N, P)
 
         # 混合颜色：\sum_i w_i * c_i
         tile_colors = (w.unsqueeze(-1) * colors_tile.unsqueeze(1)).sum(dim=0)  # (P, 3)

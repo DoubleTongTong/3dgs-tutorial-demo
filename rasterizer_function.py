@@ -15,11 +15,14 @@ class RasterizerFunction(torch.autograd.Function):
         # 2. 投影 3D 协方差到 2D 图像平面 (Equation 5: Sigma' = J * W * Sigma * W^T * J^T)
         W = camera2world[:3, :3].T
 
+        z_cam_clamped = torch.clamp(z_cam, min=1e-6)
+        inf_z = 1.0 / z_cam_clamped
+        inf_z2 = inf_z * inf_z
         J = torch.zeros((N, 2, 3), device=pos.device, dtype=pos.dtype)
-        J[:, 0, 0] = fx / z_cam
-        J[:, 1, 1] = fy / z_cam
-        J[:, 0, 2] = -(fx * x_cam) / (z_cam ** 2)
-        J[:, 1, 2] = -(fy * y_cam) / (z_cam ** 2)
+        J[:, 0, 0] = fx * inf_z
+        J[:, 1, 1] = fy * inf_z
+        J[:, 0, 2] = -fx * x_cam * inf_z2
+        J[:, 1, 2] = -fy * y_cam * inf_z2
 
         T = J @ W.unsqueeze(0)
         sigma_camera = T @ sigma @ T.transpose(1, 2)
@@ -234,8 +237,9 @@ class RasterizerFunction(torch.autograd.Function):
                 ti[:-1]
             ], dim=0)
 
-            # 计算权重 w_i = alpha_i * T_i
-            w = alpha * ti  # (N, P)
+            # 计算权重 w_i = alpha_i * T_i 并应用存活掩码以提升数值稳定性
+            alive = (ti > 1e-4).to(alpha.dtype)
+            w = alpha * ti * alive  # (N, P)
 
             # 混合颜色：\sum_i w_i * c_i
             tile_colors = (w.unsqueeze(-1) * colors_tile.unsqueeze(1)).sum(dim=0)  # (P, 3)
@@ -345,7 +349,8 @@ class RasterizerFunction(torch.autograd.Function):
                 ti[:-1]
             ], dim=0)
 
-            w = alpha * ti
+            alive = (ti > 1e-4).to(alpha.dtype)
+            w = alpha * ti * alive
 
             # 3. 计算颜色梯度：链式法则 dl/dcolor = grad_out_tile * w
             # w.unsqueeze(-1) shape: (N_tile, P, 1)

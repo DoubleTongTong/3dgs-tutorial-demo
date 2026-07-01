@@ -256,8 +256,8 @@ def evaluate_sh(f_dc, f_rest, points, camera_to_world, interleaved=True):
 
     # 8. 相乘求和并进行 Sigmoid 激活得到最终 RGB 颜色
     raw_rgb = torch.sum(sh * Y.unsqueeze(-1), dim=1)
-    # return torch.sigmoid(raw_rgb)
-    return torch.clamp(raw_rgb + 0.5, min=0.0, max=1.0)
+    # return torch.clamp(raw_rgb + 0.5, min=0.0, max=1.0)
+    return torch.sigmoid(raw_rgb)
 
 
 def build_gaussian_from_sfm(data_path, device='cpu', dtype=torch.float32, alpha_init=0.05):
@@ -319,7 +319,7 @@ def build_gaussian_from_sfm(data_path, device='cpu', dtype=torch.float32, alpha_
     }
 
 
-def makeOptimizer(parameters, lr_pos=1e-3, lr_fdc=1e-2, lr_frest=1e-2, lr_opacity=5e-3, lr_scale=1e-3, lr_q=5e-4):
+def makeOptimizer(parameters, lr_pos=1.6e-4, lr_fdc=2.5e-3, lr_frest=1.25e-4, lr_opacity=0.05, lr_scale=0.005, lr_q=0.001):
     """
     Create an Adam optimizer for 3D Gaussian Splatting parameters with custom learning rates.
     """
