@@ -281,6 +281,8 @@ class RasterizerFunction(torch.autograd.Function):
         grad_opacity_raw = torch.zeros_like(opacity_raw)
         # grad_sigma shape: (N, 3, 3)
         grad_sigma = torch.zeros_like(sigma)
+        # grad_uv shape: (N, 2)
+        grad_uv = torch.zeros((pos.shape[0], 2), device=pos.device, dtype=pos.dtype)
 
         # 2. 重新进行切片循环计算梯度 (Redo Tiling Loop)
         for tile_id, start, end in zip(unique_tile_ids.tolist(), unique_starts.tolist(), unique_ends.tolist()):
@@ -428,6 +430,25 @@ class RasterizerFunction(torch.autograd.Function):
                 orig_ids_tile.unsqueeze(1).expand(-1, 3),
                 tile_grad_pos
             )
+
+            # 累加到 grad_uv
+            grad_uv.scatter_add_(
+                0,
+                orig_ids_tile.unsqueeze(1).expand(-1, 2),
+                tile_grad_uv
+            )
+
+        # 计算高斯点可见性 Mask (在当前视角下是否 onscreen)
+        visible_mask = torch.zeros(pos.shape[0], device=pos.device, dtype=pos.dtype)
+        visible_mask[indices_onscreen] = 1.0
+        RasterizerFunction.visible_mask = visible_mask
+
+        # 将像素空间梯度转换为 NDC 空间梯度 (u分量乘以 W/2，v分量乘以 H/2)
+        grad_uv[:, 0] *= (width / 2.0)
+        grad_uv[:, 1] *= (height / 2.0)
+
+        # 保存 2D 视空间位置梯度到类属性中，供外部获取
+        RasterizerFunction.gView = grad_uv
 
         # 其他不需要计算梯度的输入参数设置为零/None
 
