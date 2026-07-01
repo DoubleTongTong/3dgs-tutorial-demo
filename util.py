@@ -349,11 +349,29 @@ def tensor_to_pil(tensor):
     return Image.fromarray(arr)
 
 
+def update_optimizer_state(optimizer, new_parameters, map_state_fn):
+    """
+    Recreate the optimizer with new parameters and transfer/map the states. (TODO)
+    """
+    pass
+
+
 def clone_gaussians(mask_clone, parameters, optimizer):
     """
-    Clone selected Gaussians. (TODO)
+    Clone selected Gaussians.
     """
-    return parameters, optimizer
+    if not mask_clone.any():
+        return parameters, optimizer
+
+    for name, param in parameters.items():
+        old_val = param.detach()
+        cloned_val = old_val[mask_clone]
+        new_val = torch.cat([old_val, cloned_val], dim=0)
+        parameters[name] = torch.nn.Parameter(new_val, requires_grad=True)
+
+    # Naive optimizer rebuild
+    new_optimizer = makeOptimizer(parameters)
+    return parameters, new_optimizer
 
 
 def split_gaussians(mask_split, parameters, optimizer, N=2):
