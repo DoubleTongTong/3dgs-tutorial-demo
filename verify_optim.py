@@ -67,13 +67,32 @@ print(f"Dataset split: {len(training_indices)} train images, {len(testing_indice
 from torchmetrics.functional.image import structural_similarity_index_measure as ssim
 from torchmetrics.functional.image import peak_signal_noise_ratio as psnr
 
+def get_sh_bound_mask(bound, device="cuda"):
+    if bound == 0:
+        num_terms = 0
+    elif bound == 1:
+        num_terms = 3
+    elif bound == 2:
+        num_terms = 8
+    else:
+        num_terms = 15
+    mask_15 = torch.zeros(15, device=device)
+    if num_terms > 0:
+        mask_15[:num_terms] = 1.0
+    return torch.cat([mask_15, mask_15, mask_15], dim=0)
+
+def apply_sh_masking(f_rest, iteration):
+    bound = min(iteration // 1000, 3)
+    mask = get_sh_bound_mask(bound, device=f_rest.device)
+    return f_rest * mask
+
 def compute_loss(pred, target):
     # 将形状从 (H, W, C) 转换为 (1, C, H, W) 以符合 TorchMetrics 的要求
     pred_trans = pred.permute(2, 0, 1).unsqueeze(0)
     target_trans = target.permute(2, 0, 1).unsqueeze(0)
 
     l1 = F.l1_loss(pred, target)
-    ssim_val = ssim(pred_trans, target_trans)
+    ssim_val = ssim(pred_trans, target_trans, data_range=1.0)
     return 0.8 * l1 + 0.2 * (1.0 - ssim_val)
 
 # 6. 设定优化变量与 PyTorch 参数
@@ -134,8 +153,9 @@ for iteration in tqdm(range(num_iterations)):
     # 动态计算当前参数下的 3D 协方差矩阵 (sigma)
     sigma = compute_3d_covariance(scale_raw, rot_raw)
 
-    # 动态评估当前视角下的高斯 RGB 颜色
-    colors = evaluate_sh(f_dc, f_rest, pos, c2w, interleaved=False)
+    # 动态评估当前视角下的高斯 RGB 颜色并应用球谐函数分阶激活遮罩
+    f_rest_effective = apply_sh_masking(f_rest, iteration)
+    colors = evaluate_sh(f_dc, f_rest_effective, pos, c2w, interleaved=False)
 
     # 渲染当前优化器下参数的图像
     pred_image = RasterizerFunction.apply(
