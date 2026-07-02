@@ -436,6 +436,16 @@ def split_gaussians(mask_split, parameters, optimizer, N=2):
 
 def prune_gaussians(mask_prune, parameters, optimizer):
     """
-    Prune selected Gaussians. (TODO)
+    Prune selected Gaussians.
     """
-    return parameters, optimizer
+    if not mask_prune.any():
+        return parameters, optimizer
+
+    keep_mask = ~mask_prune
+    for name, param in parameters.items():
+        old_val = param.detach()
+        new_val = old_val[keep_mask]
+        parameters[name] = torch.nn.Parameter(new_val, requires_grad=True)
+
+    new_optimizer = makeOptimizer(parameters)
+    return parameters, new_optimizer
