@@ -137,6 +137,7 @@ from tqdm import tqdm
 num_iterations = int(os.environ.get("NUM_ITERATIONS", 7000))
 loss_history = []
 psnr_history = []
+gaussian_count_history = []
 
 for iteration in tqdm(range(num_iterations)):
     # 随机选择一个训练图像视角
@@ -258,6 +259,9 @@ for iteration in tqdm(range(num_iterations)):
     psnr_val = psnr(pred_trans, target_trans, data_range=1.0).item()
     psnr_history.append(psnr_val)
 
+    # 记录高斯点数量
+    gaussian_count_history.append(pos.shape[0])
+
     if (iteration + 1) % 500 == 0 or iteration == 0:
         print(f"Iteration {iteration+1:04d} | Loss: {loss_val:.6f} | PSNR: {psnr_val:.4f}", flush=True)
 
@@ -295,3 +299,15 @@ ax2.legend()
 plt.tight_layout()
 plt.savefig("verify_loss.png")
 print("Saved convergence curves plot to 'verify_loss.png'", flush=True)
+
+# 10. 绘制并保存高斯点数量变化曲线图
+fig_gc, ax_gc = plt.subplots(figsize=(8, 5))
+ax_gc.plot(range(1, len(gaussian_count_history) + 1), gaussian_count_history, color='g', label='Gaussian Count')
+ax_gc.set_title("Gaussian Count Convergence Curve")
+ax_gc.set_xlabel("Iteration")
+ax_gc.set_ylabel("Number of Gaussians")
+ax_gc.grid(True)
+ax_gc.legend()
+plt.tight_layout()
+plt.savefig("verify_gaussian_count.png")
+print("Saved Gaussian count convergence curve to 'verify_gaussian_count.png'", flush=True)

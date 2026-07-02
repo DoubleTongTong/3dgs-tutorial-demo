@@ -349,13 +349,29 @@ def tensor_to_pil(tensor):
     return Image.fromarray(arr)
 
 
+@torch.no_grad()
 def update_optimizer_state(optimizer, new_parameters, map_state_fn):
     """
-    Recreate the optimizer with new parameters and transfer/map the states. (TODO)
+    Recreate the optimizer with new parameters and transfer/map the states.
     """
-    pass
+    new_optimizer = makeOptimizer(new_parameters)
+    for old_group, new_group in zip(optimizer.param_groups, new_optimizer.param_groups):
+        old_param = old_group["params"][0]
+        new_param = new_group["params"][0]
+        if old_param in optimizer.state:
+            old_state = optimizer.state[old_param]
+            new_state = {}
+            if "step" in old_state:
+                new_state["step"] = old_state["step"].clone() if isinstance(old_state["step"], torch.Tensor) else old_state["step"]
+            if "exp_avg" in old_state:
+                new_state["exp_avg"] = map_state_fn(old_state["exp_avg"], new_param)
+            if "exp_avg_sq" in old_state:
+                new_state["exp_avg_sq"] = map_state_fn(old_state["exp_avg_sq"], new_param)
+            new_optimizer.state[new_param] = new_state
+    return new_optimizer
 
 
+@torch.no_grad()
 def clone_gaussians(mask_clone, parameters, optimizer):
     """
     Clone selected Gaussians.
@@ -369,11 +385,16 @@ def clone_gaussians(mask_clone, parameters, optimizer):
         new_val = torch.cat([old_val, cloned_val], dim=0)
         parameters[name] = torch.nn.Parameter(new_val, requires_grad=True)
 
-    # Naive optimizer rebuild
-    new_optimizer = makeOptimizer(parameters)
+    def map_state_fn(old_state, new_param):
+        new_state = torch.zeros_like(new_param)
+        new_state[:old_state.shape[0]] = old_state
+        return new_state
+
+    new_optimizer = update_optimizer_state(optimizer, parameters, map_state_fn)
     return parameters, new_optimizer
 
 
+@torch.no_grad()
 def split_gaussians(mask_split, parameters, optimizer, N=2):
     """
     Split selected Gaussians.
@@ -430,10 +451,17 @@ def split_gaussians(mask_split, parameters, optimizer, N=2):
     for k, v in new_parameters.items():
         parameters[k] = v
 
-    new_optimizer = makeOptimizer(parameters)
+    remaining_mask = ~mask_split
+    def map_state_fn(old_state, new_param):
+        new_state = torch.zeros_like(new_param)
+        new_state[:remaining_mask.sum()] = old_state[remaining_mask]
+        return new_state
+
+    new_optimizer = update_optimizer_state(optimizer, parameters, map_state_fn)
     return parameters, new_optimizer
 
 
+@torch.no_grad()
 def prune_gaussians(mask_prune, parameters, optimizer):
     """
     Prune selected Gaussians.
@@ -447,5 +475,8 @@ def prune_gaussians(mask_prune, parameters, optimizer):
         new_val = old_val[keep_mask]
         parameters[name] = torch.nn.Parameter(new_val, requires_grad=True)
 
-    new_optimizer = makeOptimizer(parameters)
+    def map_state_fn(old_state, new_param):
+        return old_state[keep_mask]
+
+    new_optimizer = update_optimizer_state(optimizer, parameters, map_state_fn)
     return parameters, new_optimizer
