@@ -128,6 +128,7 @@ optimizer = makeOptimizer(opt_params)
 tau_pos = 0.0002          # 触发分裂/克隆的位置梯度阈值 (2e-4)
 tau_scale = 0.1 * scene_scale  # 区分克隆与分裂的高斯尺寸缩放阈值
 epsilon_alpha = 0.005      # 剪枝时的低透明度截断阈值
+toe_size_3d = 0.1 * scene_scale  # 大尺寸高斯剪枝阈值
 
 
 # 7. 核心训练/优化循环
@@ -202,40 +203,48 @@ for iteration in tqdm(range(num_iterations)):
     optimizer.step()
 
     # 自适应密度控制与剪枝 (Densification & Pruning)
-    # 起始步：500 步，结束步：3000 步，每 100 步触发一次
-    if iteration > 500 and iteration <= 3000 and iteration % 100 == 0:
+    # 起始步：500 步，每 100 步触发一次。克隆与分裂在 3000 步前执行，体积大剪枝在 3000 步后执行。
+    if iteration > 500 and iteration % 100 == 0:
         with torch.no_grad():
-            # 1. 筛选高梯度高斯点 (通过累计梯度除以可见次数得到真正的平均梯度)
-            # pos.sum_g_view: (N,), pos.denom: (N,) -> is_high_grad: (N,)
-            is_high_grad = (pos.sum_g_view / torch.clamp(pos.denom, min=1.0)) > tau_pos
+            if iteration <= 3000:
+                # 1. 筛选高梯度高斯点 (通过累计梯度除以可见次数得到真正的平均梯度)
+                # pos.sum_g_view: (N,), pos.denom: (N,) -> is_high_grad: (N,)
+                is_high_grad = (pos.sum_g_view / torch.clamp(pos.denom, min=1.0)) > tau_pos
 
-            # 2. 计算高斯缩放
-            scales = torch.exp(scale_raw)  # (N, 3)
-            max_scales = torch.max(scales, dim=1).values
-            is_big = max_scales > tau_scale
-            is_small = ~is_big
+                # 2. 计算高斯缩放
+                scales = torch.exp(scale_raw)  # (N, 3)
+                max_scales = torch.max(scales, dim=1).values
+                is_big = max_scales > tau_scale
+                is_small = ~is_big
 
-            mask_clone = is_high_grad & is_small
-            mask_split = is_high_grad & is_big
+                mask_clone = is_high_grad & is_small
+                mask_split = is_high_grad & is_big
 
-            # 3. 执行克隆
-            if mask_clone.any():
-                opt_params, optimizer = clone_gaussians(mask_clone, opt_params, optimizer)
+                # 3. 执行克隆
+                if mask_clone.any():
+                    opt_params, optimizer = clone_gaussians(mask_clone, opt_params, optimizer)
 
-            # 4. 执行分裂
-            if mask_split.any():
-                # 如果由于克隆导致高斯点数量增加，对 mask_split 在末尾用 False 填充以对齐当前维度
-                current_N = opt_params["pos"].shape[0]
-                if current_N > mask_split.shape[0]:
-                    pad_len = current_N - mask_split.shape[0]
-                    pad_tensor = torch.zeros(pad_len, dtype=torch.bool, device=mask_split.device)
-                    mask_split = torch.cat([mask_split, pad_tensor], dim=0)
-                opt_params, optimizer = split_gaussians(mask_split, opt_params, optimizer)
+                # 4. 执行分裂
+                if mask_split.any():
+                    # 如果由于克隆导致高斯点数量增加，对 mask_split 在末尾用 False 填充以对齐当前维度
+                    current_N = opt_params["pos"].shape[0]
+                    if current_N > mask_split.shape[0]:
+                        pad_len = current_N - mask_split.shape[0]
+                        pad_tensor = torch.zeros(pad_len, dtype=torch.bool, device=mask_split.device)
+                        mask_split = torch.cat([mask_split, pad_tensor], dim=0)
+                    opt_params, optimizer = split_gaussians(mask_split, opt_params, optimizer)
 
-            # 6. 执行剪枝（剔除透明高斯点）
+            # 5. 执行剪枝（剔除透明高斯点）
             # 重新读取当前最新的 alpha_raw 形状
             alpha_raw_latest = opt_params["alpha_raw"]
             mask_prune = torch.sigmoid(alpha_raw_latest) < epsilon_alpha
+
+            # 6. 在 3000 步之后，额外剔除在物理空间中体积过大的高斯点
+            if iteration > 3000:
+                scale_raw_latest = opt_params["scale_raw"]
+                max_scales = torch.exp(scale_raw_latest).max(dim=1).values
+                too_big = max_scales > toe_size_3d
+                mask_prune = mask_prune | too_big
 
             # 为了防止剪掉所有的高斯，至少保留一个
             if mask_prune.all():
