@@ -376,9 +376,62 @@ def clone_gaussians(mask_clone, parameters, optimizer):
 
 def split_gaussians(mask_split, parameters, optimizer, N=2):
     """
-    Split selected Gaussians. (TODO)
+    Split selected Gaussians.
     """
-    return parameters, optimizer
+    if not mask_split.any():
+        return parameters, optimizer
+
+    pos = parameters["pos"]
+    scale_raw = parameters["scale_raw"]
+    rot_raw = parameters["rot_raw"]
+
+    M = mask_split.sum().item()
+    device = pos.device
+    dtype = pos.dtype
+
+    # 1. Sample N new positions from the 3D Gaussian PDF of split elements
+    mu = pos[mask_split]  # (M, 3)
+    scale = torch.exp(scale_raw[mask_split])  # (M, 3)
+    q_norm = torch.nn.functional.normalize(rot_raw[mask_split], dim=-1)  # (M, 4)
+    # rot_raw has [w, x, y, z] format, needs conversion to [x, y, z, w] for quat_to_rotmat
+    rot_xyzw = torch.cat([q_norm[..., 1:], q_norm[..., :1]], dim=-1)
+    rot_mat = quat_to_rotmat(rot_xyzw)  # (M, 3, 3)
+
+    new_positions = []
+    for _ in range(N):
+        epsilon = torch.randn((M, 3), device=device, dtype=dtype)  # (M, 3)
+        offset = scale * epsilon  # (M, 3)
+        # (M, 3, 3) @ (M, 3, 1) -> (M, 3, 1) -> (M, 3)
+        rotated_offset = (rot_mat @ offset.unsqueeze(-1)).squeeze(-1)  # (M, 3)
+        pos_child = mu + rotated_offset  # (M, 3)
+        new_positions.append(pos_child)
+
+    # 2. Build new parameters
+    new_parameters = {}
+    for name, param in parameters.items():
+        old_val = param.detach()
+        remaining_val = old_val[~mask_split]
+
+        if name == "pos":
+            new_part = torch.cat(new_positions, dim=0)  # (M * N, 3)
+        elif name == "scale_raw":
+            scale_new = scale_raw[mask_split] - torch.log(torch.tensor(1.6, device=device, dtype=dtype))  # (M, 3)
+            new_part = scale_new.repeat(N, 1)  # (M * N, 3)
+        else:
+            if old_val.dim() == 1:
+                new_part = old_val[mask_split].repeat(N)  # (M * N,)
+            else:
+                repeat_dims = (N,) + (1,) * (old_val.dim() - 1)  # e.g., (N, 1)
+                new_part = old_val[mask_split].repeat(*repeat_dims)  # (M * N, ...)
+
+        new_val = torch.cat([remaining_val, new_part], dim=0)  # (N_old - M + M * N, ...)
+        new_parameters[name] = torch.nn.Parameter(new_val, requires_grad=True)
+
+    for k, v in new_parameters.items():
+        parameters[k] = v
+
+    new_optimizer = makeOptimizer(parameters)
+    return parameters, new_optimizer
 
 
 def prune_gaussians(mask_prune, parameters, optimizer):
