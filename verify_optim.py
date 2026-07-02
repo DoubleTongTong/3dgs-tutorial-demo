@@ -224,6 +224,12 @@ for iteration in tqdm(range(num_iterations)):
 
             # 4. 执行分裂
             if mask_split.any():
+                # 如果由于克隆导致高斯点数量增加，对 mask_split 在末尾用 False 填充以对齐当前维度
+                current_N = opt_params["pos"].shape[0]
+                if current_N > mask_split.shape[0]:
+                    pad_len = current_N - mask_split.shape[0]
+                    pad_tensor = torch.zeros(pad_len, dtype=torch.bool, device=mask_split.device)
+                    mask_split = torch.cat([mask_split, pad_tensor], dim=0)
                 opt_params, optimizer = split_gaussians(mask_split, opt_params, optimizer)
 
             # 6. 执行剪枝（剔除透明高斯点）
