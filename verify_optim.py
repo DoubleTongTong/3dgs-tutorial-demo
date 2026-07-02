@@ -4,7 +4,8 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from rasterizer_function import RasterizerFunction
-from util import w2c_to_c2w, compute_3d_covariance, scale_intrinsics, load_cameras, build_gaussian_from_sfm, evaluate_sh, makeOptimizer, clone_gaussians, split_gaussians, prune_gaussians, tensor_to_pil
+from util import w2c_to_c2w, compute_3d_covariance, scale_intrinsics, load_cameras, build_gaussian_from_sfm, evaluate_sh, makeOptimizer, clone_gaussians, split_gaussians, prune_gaussians, tensor_to_pil, validate
+
 
 # 1. 配置 GPU 设备与数据路径
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -126,7 +127,7 @@ optimizer = makeOptimizer(opt_params)
 
 # 自适应密度控制（Densification）超参数
 tau_pos = 0.0002          # 触发分裂/克隆的位置梯度阈值 (2e-4)
-tau_scale = 0.1 * scene_scale  # 区分克隆与分裂的高斯尺寸缩放阈值
+tau_scale = 0.01 * scene_scale  # 区分克隆与分裂的高斯尺寸缩放阈值
 epsilon_alpha = 0.005      # 剪枝时的低透明度截断阈值
 toe_size_3d = 0.1 * scene_scale  # 大尺寸高斯剪枝阈值
 
@@ -139,6 +140,9 @@ num_iterations = int(os.environ.get("NUM_ITERATIONS", 7000))
 loss_history = []
 psnr_history = []
 gaussian_count_history = []
+validation_psnr = []
+validation_ssim = []
+log_dir = "training_out"
 
 for iteration in tqdm(range(num_iterations)):
     # 随机选择一个训练图像视角
@@ -201,6 +205,81 @@ for iteration in tqdm(range(num_iterations)):
             pos.denom += RasterizerFunction.visible_mask
 
     optimizer.step()
+
+    # 验证逻辑 (每 1000 步，或者当调试环境变量 DEBUG_VALIDATE == 1 时在每步执行)
+    do_validate = (iteration % 1000 == 0) or (os.environ.get("DEBUG_VALIDATE") == "1")
+    if do_validate:
+        # 在调试模式下只评估第一个测试视角以极大加快运行速度
+        val_indices = testing_indices[:1] if os.environ.get("DEBUG_VALIDATE") == "1" else testing_indices
+        iter_log_dir = os.path.join(log_dir, f"iteration_{iteration}")
+        val_psnr, val_ssim = validate(
+            pos, f_dc, f_rest, scale_raw, rot_raw, alpha_raw,
+            c2ws, target_images, val_indices,
+            h_base, w_base, fx_base, fy_base, cx_base, cy_base,
+            log_dir=iter_log_dir, iteration=iteration
+        )
+        validation_psnr.append(val_psnr)
+        validation_ssim.append(val_ssim)
+        tqdm.write(f"Validation at Iteration {iteration} | PSNR: {val_psnr:.4f} | SSIM: {val_ssim:.4f} | Num Gaussians: {pos.shape[0]}")
+
+        # 绘图逻辑
+        os.makedirs(iter_log_dir, exist_ok=True)
+
+        # 1. 验证 SSIM 趋势图
+        if len(validation_ssim) > 0:
+            plt.figure()
+            plt.plot(validation_ssim, color='g')
+            plt.grid(True)
+            plt.title("Validation SSIM")
+            plt.xlabel("Validation Event")
+            plt.ylabel("SSIM")
+            plt.savefig(os.path.join(iter_log_dir, "validation_ssim.png"))
+            plt.close()
+
+        # 2. 验证 PSNR 趋势图
+        if len(validation_psnr) > 0:
+            plt.figure()
+            plt.plot(validation_psnr, color='r')
+            plt.grid(True)
+            plt.title("Validation PSNR")
+            plt.xlabel("Validation Event")
+            plt.ylabel("PSNR (dB)")
+            plt.savefig(os.path.join(iter_log_dir, "validation_psnr.png"))
+            plt.close()
+
+        # 3. 训练 Loss 趋势图
+        if len(loss_history) > 0:
+            plt.figure()
+            plt.plot(loss_history, color='b')
+            plt.grid(True)
+            plt.title("Training Loss")
+            plt.xlabel("Iteration")
+            plt.ylabel("Loss")
+            plt.savefig(os.path.join(iter_log_dir, "training_loss.png"))
+            plt.close()
+
+        # 4. 训练 PSNR 趋势图
+        if len(psnr_history) > 0:
+            plt.figure()
+            plt.plot(psnr_history, color='m')
+            plt.grid(True)
+            plt.title("Training PSNR")
+            plt.xlabel("Iteration")
+            plt.ylabel("PSNR (dB)")
+            plt.savefig(os.path.join(iter_log_dir, "training_psnr.png"))
+            plt.close()
+
+        # 5. 高斯点数变化趋势图
+        if len(gaussian_count_history) > 0:
+            plt.figure()
+            plt.plot(gaussian_count_history, color='c')
+            plt.grid(True)
+            plt.title("Gaussian Count")
+            plt.xlabel("Iteration")
+            plt.ylabel("Number of Gaussians")
+            plt.savefig(os.path.join(iter_log_dir, "gaussian_count.png"))
+            plt.close()
+
 
     # 自适应密度控制与剪枝 (Densification & Pruning)
     # 起始步：500 步，每 100 步触发一次。克隆与分裂在 3000 步前执行，体积大剪枝在 3000 步后执行。

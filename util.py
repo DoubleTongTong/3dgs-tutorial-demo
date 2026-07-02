@@ -480,3 +480,52 @@ def prune_gaussians(mask_prune, parameters, optimizer):
 
     new_optimizer = update_optimizer_state(optimizer, parameters, map_state_fn)
     return parameters, new_optimizer
+
+
+@torch.no_grad()
+def validate(pos, f_dc, f_rest, scale_raw, rot_raw, alpha_raw, c2ws, target_images, testing_indices, h, w, fx, fy, cx, cy, log_dir=None, iteration=None):
+    """
+    Evaluate validation metrics (mean PSNR, mean SSIM) on test views and optionally save predicted images.
+    """
+    import os
+    from rasterizer_function import RasterizerFunction
+    from torchmetrics.functional.image import structural_similarity_index_measure as ssim
+    from torchmetrics.functional.image import peak_signal_noise_ratio as psnr
+    import torch.nn.functional as F
+
+    all_psnr = []
+    all_ssim = []
+
+    sigma = compute_3d_covariance(scale_raw, rot_raw)
+
+    for idx in testing_indices:
+        c2w = c2ws[idx]
+        target_image = target_images[idx]
+
+        # Evaluate spherical harmonics (SH) colors for current view (without masking)
+        colors = evaluate_sh(f_dc, f_rest, pos, c2w, interleaved=False)
+
+        # Render
+        pred_image = RasterizerFunction.apply(
+            pos, colors, alpha_raw, h, w, fx, fy, cx, cy, c2w, sigma
+        )
+
+        pred_trans = pred_image.permute(2, 0, 1).unsqueeze(0)
+        target_trans = target_image.permute(2, 0, 1).unsqueeze(0)
+
+        # Shape matching interpolation if target size differs from render size
+        if pred_trans.shape != target_trans.shape:
+            target_trans = F.interpolate(target_trans, size=(h, w), mode='bilinear', align_corners=False)
+
+        ssim_val = ssim(pred_trans, target_trans, data_range=1.0).item()
+        psnr_val = psnr(pred_trans, target_trans, data_range=1.0).item()
+
+        all_psnr.append(psnr_val)
+        all_ssim.append(ssim_val)
+
+        if log_dir is not None:
+            os.makedirs(log_dir, exist_ok=True)
+            # Convert PyTorch tensor to PIL Image and save
+            tensor_to_pil(pred_image).save(os.path.join(log_dir, f"prediction_{idx}.png"))
+
+    return np.mean(all_psnr), np.mean(all_ssim)
